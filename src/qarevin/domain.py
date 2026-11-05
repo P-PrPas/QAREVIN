@@ -58,6 +58,7 @@ class InstrumentSpec(Contract):
     volume_max: float = Field(gt=0)
     margin_per_lot: float = Field(gt=0)
     stop_distance_min: float = Field(default=0, ge=0)
+    # stop_distance_min is an absolute price distance, NOT MT5 points.
     verified: bool = False
 
     @model_validator(mode="after")
@@ -80,6 +81,7 @@ class CostModel(Contract):
     spread_points: float = Field(ge=0)
     slippage_points: float = Field(ge=0)
     commission_per_lot_side: float = Field(ge=0)
+    spread_multiplier: float = Field(default=1, ge=1, le=10)
     verified: bool = False
 
 
@@ -87,6 +89,7 @@ class RiskPolicy(Contract):
     per_trade: float = Field(default=0.0025, gt=0, le=0.0025)
     daily_loss: float = Field(default=0.01, gt=0, le=0.01)
     max_drawdown: float = Field(default=0.05, gt=0, le=0.05)
+    max_margin_fraction: float = Field(default=0.25, gt=0, le=0.5)
     max_positions: int = Field(default=1, ge=1, le=1)
     max_spread_points: float = Field(default=100, gt=0)
     max_quote_age_seconds: float = Field(default=10, gt=0)

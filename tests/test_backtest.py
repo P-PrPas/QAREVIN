@@ -59,3 +59,29 @@ def test_min_lot_skip_and_gap_stop(config):
     result = run_backtest(bars, config, StrategySpec(family='no_trade'), signal_frame=decision)
     assert result['trades'][0]['reason'] == 'gap_stop'
     assert result['trades'][0]['exit'] < 1491
+
+
+def test_missing_minute_executes_exit_but_expires_entry(config):
+    bars = make_bars(5)
+    decision = pd.DataFrame({'side':[1,0], 'stop_distance':[1.,1.]}, index=bars.index[[0,2]])
+    bars = bars.drop(bars.index[2])
+    result = run_backtest(bars,config,StrategySpec(family='no_trade'),signal_frame=decision)
+    assert result['trades'][0]['closed'] == bars.index[2].isoformat()
+    assert result['trades'][0]['reason'] == 'signal'
+
+
+def test_spread_model_is_floor_and_stress_applies(config):
+    bars = make_bars(3)
+    bars['spread_points'] = 0
+    decision = pd.DataFrame({'side':[1], 'stop_distance':[1.]},index=bars.index[:1])
+    baseline = run_backtest(bars,config,StrategySpec(family='no_trade'),signal_frame=decision)
+    stressed = config.model_copy(update={'costs':config.costs.model_copy(update={'spread_multiplier':2.})})
+    result = run_backtest(bars,stressed,StrategySpec(family='no_trade'),signal_frame=decision)
+    assert result['trades'][0]['entry'] > baseline['trades'][0]['entry']
+    assert result['trades'][0]['net_pnl'] < baseline['trades'][0]['net_pnl']
+
+
+def test_hourly_summary_preserves_adverse_equity_and_margin(config):
+    result = run_backtest(make_bars(120),config,StrategySpec(family='no_trade'))
+    assert len(result['equity']) == 2
+    assert all('margin' in row and 'open_risk' in row for row in result['equity'])

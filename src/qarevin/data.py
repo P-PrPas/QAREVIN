@@ -5,12 +5,27 @@ import json
 import shutil
 import tempfile
 from pathlib import Path
+from datetime import timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
 
 from qarevin.domain import canonical_json, digest, file_digest, utc_now
+
+def source_zone(value: str):
+    if value.startswith("UTC+") or value.startswith("UTC-"):
+        sign = 1 if value[3] == "+" else -1
+        hours, minutes = map(int, value[4:].split(":"))
+        if hours > 14 or minutes >= 60:
+            raise ValueError("invalid fixed UTC offset")
+        return timezone(sign * timedelta(hours=hours, minutes=minutes))
+    return ZoneInfo(value)
+
+
+def dataset_identity(manifest: dict) -> str:
+    return digest({key: value for key, value in manifest.items() if key not in ('id', 'created_at')})
+
 
 PRICE_COLUMNS = ["open", "high", "low", "close"]
 
@@ -45,7 +60,10 @@ def _normalize(chunk: pd.DataFrame, source_timezone: str) -> pd.DataFrame:
         raise ValueError("CSV requires timestamp or MT5 <DATE>/<TIME>")
     index = pd.DatetimeIndex(timestamp)
     if index.tz is None:
-        index = index.tz_localize(source_timezone, ambiguous="raise", nonexistent="raise")
+        if source_timezone == "NY+07:00":
+            index = (index - pd.Timedelta(hours=7)).tz_localize("America/New_York", ambiguous="raise", nonexistent="raise")
+        else:
+            index = index.tz_localize(source_zone(source_timezone), ambiguous="raise", nonexistent="raise")
     elif source_timezone != "UTC":
         raise ValueError("offset-aware input must declare UTC normalization")
     chunk.index = index.tz_convert("UTC")
@@ -59,26 +77,31 @@ def _normalize(chunk: pd.DataFrame, source_timezone: str) -> pd.DataFrame:
     for col in ("tick_volume", "real_volume", "spread_points"):
         if col in chunk:
             chunk[col] = pd.to_numeric(chunk[col], errors="raise")
+    chunk = chunk[[c for c in PRICE_COLUMNS + ["tick_volume", "real_volume", "spread_points"] if c in chunk]]
     validate_bars(chunk)
     return chunk
 
 
 def import_csv(source: Path, store: Path, *, source_timezone: str, provider: str,
-               symbol: str, accessible_before: str | None = None, chunksize: int = 100_000) -> dict:
-    ZoneInfo(source_timezone)
+               symbol: str, accessible_before: str = "2025-01-01", chunksize: int = 100_000) -> dict:
+    if source_timezone != "NY+07:00":
+        source_zone(source_timezone)
+    if accessible_before is None:
+        raise ValueError("explicit research boundary required")
     if not provider.strip() or not symbol.strip() or chunksize < 1:
         raise ValueError("provider, symbol and positive chunksize required")
     if source.is_symlink() or not source.is_file():
         raise ValueError("source must be a regular non-symlink file")
     raw_hash = file_digest(source)
     identity = {"raw_sha256": raw_hash, "source_timezone": source_timezone,
-                "provider": provider, "symbol": symbol, "schema": 1,
+                "provider": provider, "symbol": symbol, "schema": 2,
+                "normalizer_sha256": file_digest(Path(__file__)),
                 "accessible_before": accessible_before}
-    dataset_id = digest(identity)
     store.mkdir(parents=True, exist_ok=True)
-    destination = store / dataset_id
-    if destination.exists():
-        return read_manifest(destination)
+    for prior in store.glob("*/manifest.json"):
+        existing = read_manifest(prior.parent)
+        if all(existing.get(key) == value for key, value in identity.items()):
+            return existing
     temp = Path(tempfile.mkdtemp(prefix=".import-", dir=store))
     try:
         shutil.copyfile(source, temp / "raw.csv")
@@ -89,7 +112,7 @@ def import_csv(source: Path, store: Path, *, source_timezone: str, provider: str
         delimiter = "\t" if "\t" in first else "," if "," in first else ";"
         previous = None
         first_time = None
-        count = gaps = 0
+        count = gaps = spikes = 0
         partitions = []
         for number, chunk in enumerate(pd.read_csv(temp / "raw.csv", sep=delimiter, chunksize=chunksize)):
             bars = _normalize(chunk, source_timezone)
@@ -97,6 +120,7 @@ def import_csv(source: Path, store: Path, *, source_timezone: str, provider: str
                 raise ValueError("data crosses accessible research boundary; use a separate owner-only holdout import")
             if previous is not None and bars.index[0] <= previous:
                 raise ValueError("unordered or duplicate bars across chunks")
+            spikes += int((bars.close.pct_change().abs() > .05).sum())
             differences = bars.index.to_series().diff().dropna()
             gaps += int((differences > pd.Timedelta(minutes=1)).sum())
             if previous is not None and bars.index[0] - previous > pd.Timedelta(minutes=1):
@@ -110,14 +134,21 @@ def import_csv(source: Path, store: Path, *, source_timezone: str, provider: str
             count += len(bars)
         if not count:
             raise ValueError("no bars")
-        manifest = identity | {"id": dataset_id, "created_at": utc_now(), "rows": count,
+        manifest = identity | {"created_at": utc_now(), "rows": count,
                                "start": first_time, "end": previous.isoformat(),
                                "partitions": partitions,
-                               "qa": {"valid": True, "gap_count": gaps, "gap_classification": "unknown_without_broker_calendar",
+                               "qa": {"valid": True, "gap_count": gaps, "spike_count_gt_5pct": spikes, "gap_classification": "unknown_without_broker_calendar",
                                       "price_basis": "unverified_bid_assumption", "tick_path_available": False}}
+        manifest["id"] = dataset_identity(manifest)
+        destination = store / manifest["id"]
         (temp / "manifest.json").write_text(canonical_json(manifest))
         temp.rename(destination)
         return manifest
+    except Exception as exc:
+        quarantine = store / '.quarantine'
+        quarantine.mkdir(exist_ok=True)
+        (quarantine / (raw_hash + '.json')).write_text(canonical_json({"raw_sha256": raw_hash, "status": "rejected", "error_type": type(exc).__name__}))
+        raise
     finally:
         if temp.exists():
             shutil.rmtree(temp)
@@ -125,7 +156,7 @@ def import_csv(source: Path, store: Path, *, source_timezone: str, provider: str
 
 def read_manifest(directory: Path) -> dict:
     manifest = json.loads((directory / "manifest.json").read_text())
-    if manifest["id"] != directory.name:
+    if manifest["id"] != directory.name or dataset_identity(manifest) != manifest["id"]:
         raise ValueError("dataset identity mismatch")
     if file_digest(directory / "raw.csv") != manifest["raw_sha256"]:
         raise ValueError("raw file hash mismatch")
@@ -134,6 +165,9 @@ def read_manifest(directory: Path) -> dict:
 
 def load_dataset(directory: Path, start: str | None = None, end: str | None = None) -> pd.DataFrame:
     manifest = read_manifest(directory)
+    for bound in (start, end):
+        if bound and pd.Timestamp(bound).tz is None:
+            raise ValueError("date boundaries require explicit timezone")
     frames = []
     for partition in manifest["partitions"]:
         path = directory / partition["path"]

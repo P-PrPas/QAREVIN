@@ -54,3 +54,12 @@ in the plan, not tuned parameters. The runner uses M1 bid OHLC + spread proxy, n
 adverse stop gaps, costs, lot steps, persistent per-run daily/drawdown halts and session cutoff.
 No take-profit limit fills or overnight swap model are implemented; strategies exit by closed-bar
 signals, stops or cutoff. Daily cutoff failures are closed at the next executable event.
+
+Broker CSV time can be explicit `UTC+02:00`/`UTC-05:00` or `NY+07:00` (broker clock is New York
+local time plus 7 hours, following US DST). This mapping is a declared data-source convention,
+not an auto-detection. `stop_distance_min` is in absolute price units; MT5 points must be converted
+by the adapter. Margin usage is capped at 25% of equity by default. Missing-minute exits execute
+at the next available quote; entries expire when the immediate execution event is absent.
+Spread used is `max(bar_spread, model_floor) * spread_multiplier`, preventing CSV spread from
+bypassing conservative assumptions or stress tests. Results contain lot-fill/skip counts.
+Equity is summarized hourly while retaining M1 adverse marks, peaks, margin and open risk.

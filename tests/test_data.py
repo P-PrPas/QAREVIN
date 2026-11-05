@@ -58,3 +58,24 @@ def test_dst_ambiguity_and_sealed_boundary_rejected(tmp_path):
     source = Path(__file__).parent / 'fixtures/m1.csv'
     with pytest.raises(ValueError, match='boundary'):
         import_csv(source, tmp_path / 'store', source_timezone='UTC', provider='test', symbol='gold', accessible_before='2020-01-01')
+
+
+def test_fixed_and_broker_offset_schedules(tmp_path):
+    source = tmp_path/'broker.csv'
+    source.write_text('timestamp,open,high,low,close\n2020-03-08T03:00:00,1,2,1,2\n2020-03-15T03:00:00,1,2,1,2\n')
+    manifest = import_csv(source,tmp_path/'store',source_timezone='NY+07:00',provider='test',symbol='gold')
+    bars = load_dataset(tmp_path/'store'/manifest['id'])
+    assert list(bars.index.hour) == [1,0]  # US DST changed between the two broker timestamps.
+    manifest2 = import_csv(source,tmp_path/'fixed',source_timezone='UTC+02:00',provider='test',symbol='gold')
+    assert list(load_dataset(tmp_path/'fixed'/manifest2['id']).index.hour) == [1,1]
+
+
+def test_manifest_metadata_and_partition_binding(tmp_path):
+    import json
+    source = Path(__file__).parent/'fixtures/m1.csv'
+    manifest = import_csv(source,tmp_path,source_timezone='UTC',provider='test',symbol='gold')
+    path = tmp_path/manifest['id']/'manifest.json'
+    manifest['source_timezone'] = 'Europe/Athens'
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError,match='identity'):
+        load_dataset(path.parent)
