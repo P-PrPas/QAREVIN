@@ -8,13 +8,13 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class Contract(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False, strict=True)
 
 
 def canonical_json(value: Any) -> str:
@@ -47,8 +47,8 @@ class Environment(StrEnum):
 
 class InstrumentSpec(Contract):
     symbol: str = Field(min_length=1, max_length=64)
-    account_currency: str = "USD"
-    profit_currency: str = "USD"
+    account_currency: str = Field(default="USD", pattern=r"^[A-Z]{3}$")
+    profit_currency: str = Field(default="USD", pattern=r"^[A-Z]{3}$")
     point: float = Field(gt=0)
     tick_size: float = Field(gt=0)
     tick_value: float = Field(gt=0)
@@ -62,6 +62,11 @@ class InstrumentSpec(Contract):
 
     @model_validator(mode="after")
     def consistent(self) -> InstrumentSpec:
+        for value in (self.volume_min, self.volume_max):
+            if not math.isclose(value / self.volume_step, round(value / self.volume_step), abs_tol=1e-8):
+                raise ValueError("volume bounds must align with step")
+        if self.tick_size < self.point:
+            raise ValueError("tick_size below point")
         if self.volume_max < self.volume_min:
             raise ValueError("volume_max below volume_min")
         if self.profit_currency != self.account_currency:
@@ -88,7 +93,7 @@ class RiskPolicy(Contract):
     @field_validator("risk_day_timezone")
     @classmethod
     def timezone_exists(cls, value: str) -> str:
-        ZoneInfo(value)
+        checked_timezone(value)
         return value
 
 
@@ -101,7 +106,7 @@ class SessionPolicy(Contract):
 
     @model_validator(mode="after")
     def valid_window(self) -> SessionPolicy:
-        ZoneInfo(self.timezone)
+        checked_timezone(self.timezone)
         if not self.entry_start_hour < self.entry_end_hour <= self.flatten_hour:
             raise ValueError("require start < end <= flatten; overnight sessions unsupported")
         return self
@@ -111,7 +116,7 @@ class ResearchConfig(Contract):
     environment: Literal["research"] = "research"
     initial_equity: float = Field(default=1000, gt=0)
     daily_experiments: int = Field(default=5, ge=1, le=20)
-    worker_concurrency: Literal[1] = 1
+    worker_concurrency: int = Field(default=1, ge=1, le=1)
     job_timeout_seconds: int = Field(default=900, ge=1, le=3600)
     memory_reserve_mib: int = Field(default=1024, ge=256)
     instrument: InstrumentSpec
@@ -124,8 +129,34 @@ class ResearchConfig(Contract):
             raise ValueError("unverified instrument, costs or sessions; demo blocked")
 
 
+def checked_timezone(value: str) -> str:
+    if value == "localtime":
+        raise ValueError("host-dependent timezone prohibited")
+    try:
+        ZoneInfo(value)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise ValueError("unknown timezone") from exc
+    return value
+
+
+def unique_json(text: str) -> Any:
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError("duplicate JSON key")
+            result[key] = value
+        return result
+    return json.loads(text, object_pairs_hook=pairs)
+
+
 def load_config(path: Path) -> ResearchConfig:
-    return ResearchConfig.model_validate_json(path.read_text())
+    return ResearchConfig.model_validate(unique_json(path.read_text()))
+
+
+def version_identity(config: ResearchConfig) -> str:
+    from qarevin import __version__
+    return digest({"schema_version": 1, "package_version": __version__, "config": config.model_dump(mode="json")})
 
 
 def finite(value: float, name: str) -> float:
