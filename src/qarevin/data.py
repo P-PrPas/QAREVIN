@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import tempfile
 from pathlib import Path
@@ -15,9 +16,12 @@ from qarevin.domain import canonical_json, digest, file_digest, utc_now
 
 def source_zone(value: str):
     if value.startswith("UTC+") or value.startswith("UTC-"):
-        sign = 1 if value[3] == "+" else -1
-        hours, minutes = map(int, value[4:].split(":"))
-        if hours > 14 or minutes >= 60:
+        match = re.fullmatch(r"UTC([+-])([0-9]{2}):([0-9]{2})", value)
+        if not match:
+            raise ValueError("fixed offset must be UTC+HH:MM or UTC-HH:MM")
+        sign = 1 if match[1] == "+" else -1
+        hours, minutes = int(match[2]), int(match[3])
+        if hours > 14 or minutes >= 60 or (hours == 14 and minutes):
             raise ValueError("invalid fixed UTC offset")
         return timezone(sign * timedelta(hours=hours, minutes=minutes))
     return ZoneInfo(value)
@@ -99,9 +103,14 @@ def import_csv(source: Path, store: Path, *, source_timezone: str, provider: str
                 "accessible_before": accessible_before}
     store.mkdir(parents=True, exist_ok=True)
     for prior in store.glob("*/manifest.json"):
-        existing = read_manifest(prior.parent)
+        if prior.is_symlink() or prior.parent.is_symlink():
+            continue
+        try:
+            existing = json.loads(prior.read_text())
+        except (ValueError, OSError):
+            continue
         if all(existing.get(key) == value for key, value in identity.items()):
-            return existing
+            return read_manifest(prior.parent)
     temp = Path(tempfile.mkdtemp(prefix=".import-", dir=store))
     try:
         shutil.copyfile(source, temp / "raw.csv")
@@ -110,7 +119,7 @@ def import_csv(source: Path, store: Path, *, source_timezone: str, provider: str
         with (temp / "raw.csv").open() as stream:
             first = stream.readline()
         delimiter = "\t" if "\t" in first else "," if "," in first else ";"
-        previous = None
+        previous = previous_close = None
         first_time = None
         count = gaps = spikes = 0
         partitions = []
@@ -121,6 +130,9 @@ def import_csv(source: Path, store: Path, *, source_timezone: str, provider: str
             if previous is not None and bars.index[0] <= previous:
                 raise ValueError("unordered or duplicate bars across chunks")
             spikes += int((bars.close.pct_change().abs() > .05).sum())
+            if previous_close is not None and abs(float(bars.close.iloc[0]) / previous_close - 1) > .05:
+                spikes += 1
+            previous_close = float(bars.close.iloc[-1])
             differences = bars.index.to_series().diff().dropna()
             gaps += int((differences > pd.Timedelta(minutes=1)).sum())
             if previous is not None and bars.index[0] - previous > pd.Timedelta(minutes=1):

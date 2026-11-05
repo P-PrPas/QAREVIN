@@ -79,3 +79,18 @@ def test_manifest_metadata_and_partition_binding(tmp_path):
     path.write_text(json.dumps(manifest))
     with pytest.raises(ValueError,match='identity'):
         load_dataset(path.parent)
+
+
+@pytest.mark.parametrize('zone',['UTC+-1:00','UTC+05:-30','UTC+14:01'])
+def test_malformed_fixed_offsets_rejected(zone):
+    from qarevin.data import source_zone
+    with pytest.raises(ValueError):
+        source_zone(zone)
+
+
+def test_corrupt_unrelated_dataset_does_not_block_import(tmp_path):
+    other = tmp_path/'bad'
+    other.mkdir()
+    (other/'manifest.json').write_text('not JSON')
+    manifest = import_csv(Path(__file__).parent/'fixtures/m1.csv',tmp_path,source_timezone='UTC',provider='test',symbol='gold')
+    assert manifest['rows'] == 2

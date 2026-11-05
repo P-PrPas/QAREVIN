@@ -175,11 +175,11 @@ def run_backtest(bars: pd.DataFrame, config: ResearchConfig, strategy: StrategyS
         previous_bucket = bucket
     if position:
         close(float(bars.iloc[-1].close), spread, bars.index[-1] + pd.Timedelta(minutes=1), "end_of_data")
-        equity[-1].update(equity=balance, balance=balance, drawdown=max(0, 1 - balance / high_water))
+        equity[-1].update(equity=balance, balance=balance, drawdown=max(equity[-1]["drawdown"], 0, 1 - balance / high_water), worst_equity=min(equity[-1]["worst_equity"], balance))
     result = {"schema": 1, "strategy": strategy.model_dump(mode="json"), "config_hash": digest(config),
               "initial_equity": config.initial_equity, "final_equity": balance,
               "start_time": bars.index[0].isoformat(), "end_time": (bars.index[-1] + pd.Timedelta(minutes=1)).isoformat(),
-              "spread_rule": "max(bar_spread, model_floor) * multiplier",
+              "spread_rule": "max(bar_spread, model_floor) * multiplier; stressed spread also enforces entry limit",
               "cost_verified": cost.verified, "equity_sampling": "hourly_with_M1_adverse_and_peak",
               "lot_feasibility": {"filled_entries": sum(e["event"] == "entry_fill" for e in events),
                                   "skipped_entries": sum(e["event"] == "skip_min_lot_or_margin" for e in events)},
