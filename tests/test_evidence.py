@@ -68,6 +68,7 @@ def test_source_archive_replays_from_extracted_source(tmp_path, config):
     import json
     import os
     import subprocess
+    import sys
     import zipfile
     source = Path(__file__).parent/'fixtures/m1.csv'
     manifest = import_csv(source,tmp_path/'datasets',source_timezone='UTC',provider='test',symbol='gold')
@@ -79,7 +80,7 @@ def test_source_archive_replays_from_extracted_source(tmp_path, config):
     with zipfile.ZipFile(archive) as bundle:
         assert 'requirements.lock' in bundle.namelist()
         bundle.extractall(tmp_path/'restore')
-    result = subprocess.run([str(Path('.venv/bin/python').resolve()), '-m', 'qarevin.cli',
+    result = subprocess.run([sys.executable, '-m', 'qarevin.cli',
                              'replay-experiment',record['artifact'],str(dataset)],
                             cwd=tmp_path/'restore', env=os.environ | {'PYTHONPATH':str(tmp_path/'restore/src')},
                             text=True,capture_output=True,check=True)
