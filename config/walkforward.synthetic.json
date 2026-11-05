@@ -1,0 +1,9 @@
+{
+  "candidates": [{"family": "no_trade"}, {"family": "random", "seed": 7}],
+  "folds": [{
+    "train_start": "2020-01-01T00:00:00Z",
+    "validation_start": "2020-01-06T00:00:00Z",
+    "test_start": "2020-01-13T00:00:00Z",
+    "test_end": "2020-01-20T00:00:00Z"
+  }]
+}
