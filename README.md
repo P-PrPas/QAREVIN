@@ -112,3 +112,38 @@ id; a matching prior registration is mandatory and repeating a target campaign b
 Owner holdout preregistration requires a passing matching robustness record. Consumption is bound
 to raw-file identity and overlapping UTC ranges, so dataset aliases cannot reopen the same history.
 Identical registered backtests become audited replays of the original artifact.
+
+## Hermes research integration (F3)
+
+```bash
+.venv/bin/python scripts/setup_local.py  # dedicated ignored state/data/token, starts nothing
+.venv/bin/python scripts/configure_hermes.py --base ~/.hermes-trevan/config.yaml --dry-run
+# Generate into a fresh home after checking the dry-run; no keys are copied:
+.venv/bin/python scripts/configure_hermes.py --base ~/.hermes-trevan/config.yaml
+# Import ONLY accessible research data into ./data, then check memory before starting:
+.venv/bin/qarevin preflight --job-memory-mib 1024
+# Optional, when headroom permits:
+docker compose up -d --build qarevin-api qarevin-worker
+```
+
+The core API binds localhost:8788, authenticates an owner-only token file, caps request size and
+concurrency, and exposes only research/read/request operations. Jobs use durable leases, atomic
+budgets (default 5/day), semantic deduplication, idempotency, cancellation and failed/timed-out state.
+The trusted controller runs a parameter-only child with stripped environment and CPU/memory/file
+limits. The Compose worker has no network and no secrets. Arbitrary Python source remains disabled;
+resource limits alone are not claimed to sandbox arbitrary hostile code. Initial agent datasets
+are capped at 250,000 M1 rows: partition owner inputs rather than loading all history on this host.
+
+Agent result tools return bounded summaries, 20 recent trades and 24 equity samples rather than
+entire curves. Full evidence remains immutable in the registry. The generated Hermes profile
+copies only non-secret model identity settings, disables shell/file/delegation/other toolsets and
+uses its own home. Configure model/Telegram secrets privately and validate actual tool inventory
+on the installed Hermes version before enabling the optional `agent` profile. Pin
+`QAREVIN_HERMES_IMAGE` to a tested digest; the placeholder deliberately cannot start an agent.
+No existing Hermes config or container is changed by these scripts.
+
+No scheduler or outbound chat is installed automatically. `jobs/` contains bounded research/daily
+prompts for owner-installed Hermes jobs after actual-agent budget/injection evaluation. The 20-cycle
+offline test uses real bounded workers with synthetic data, not an LLM. `eval/injection_cases.json`
+is the corpus for the still-pending actual Hermes evaluation. API permission tests are not a
+substitute for that gate. No credentials are present in the repository.
