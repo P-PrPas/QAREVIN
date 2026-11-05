@@ -91,3 +91,17 @@ HoldoutService is owner-only and never exposed through agent tools. It requires 
 research roots, freezes code/config/strategy and consumes the campaign before loading data. A crash
 also consumes the opening. ResearchCatalog enforces the date boundary and dataset IDs, not file paths.
 Actual deployment must mount only the research root into API/worker, never the owner holdout root.
+
+Registered walk-forward CLI runs keep a registry beside the output artifacts; pure-library runs
+without a store are unregistered diagnostics and cannot pass robustness eligibility. Every trial
+and campaign is preregistered before computation, including repeated runs of the same protocol.
+Holdout binds dataset/protocol as well as strategy/code/config, and a different campaign name
+cannot reopen a consumed dataset. Holdout starts before 2025 are rejected.
+
+Source archives are published atomically and verified when reused. Source-checkout experiments
+require lockfile/pyproject; archives include `requirements.environment.txt` for all resolved packages.
+Restore that file and the Python minor before replay; extra packages are tolerated, recorded package
+version mismatches are rejected. Replay reports exact hash equality plus abs=1e-8/rel=1e-10 numeric
+reproduction. Audit anchors appear in result artifacts and `.anchor.json` beside database backups;
+keep them with an owner-controlled backup, since a local hash chain alone cannot prevent an
+administrator from rewriting both the database and every local anchor.

@@ -88,10 +88,12 @@ def _main(argv: list[str] | None = None) -> None:
         from qarevin.domain import unique_json
         from qarevin.strategies import StrategySpec
         from qarevin.walkforward import Fold, walk_forward
+        from qarevin.evidence import EvidenceStore
         protocol = unique_json(args.protocol.read_text())
         result = walk_forward(load_dataset(args.dataset), load_config(args.config),
                               [StrategySpec.model_validate(item) for item in protocol["candidates"]],
-                              [Fold.model_validate(item) for item in protocol["folds"]])
+                              [Fold.model_validate(item) for item in protocol["folds"]],
+                              store=EvidenceStore(args.output / "registry.sqlite"))
         print(json.dumps({"artifact": str(write_artifact(args.output, result))}))
     elif args.command == "backup":
         from qarevin.evidence import EvidenceStore

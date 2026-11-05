@@ -30,7 +30,7 @@ def test_holdout_consumed_even_when_evaluation_crashes(tmp_path, config):
     store = EvidenceStore(tmp_path/'owner.sqlite')
     service = HoldoutService(store, tmp_path/'sealed', tmp_path/'research')
     strategy = StrategySpec(family='no_trade')
-    service.preregister('campaign1', config, strategy)
+    service.preregister('campaign1', 'a'*64, config, strategy)
     with pytest.raises(FileNotFoundError):
         service.evaluate_once('campaign1', 'a'*64, config, strategy)
     assert store.get('holdout_access', 'campaign1')['status'] == 'consumed'
@@ -85,3 +85,24 @@ def test_source_archive_replays_from_extracted_source(tmp_path, config):
                             cwd=tmp_path/'restore', env=os.environ | {'PYTHONPATH':str(tmp_path/'restore/src')},
                             text=True,capture_output=True,check=True)
     assert json.loads(result.stdout)['reproduced']
+
+
+def test_holdout_renaming_campaign_does_not_reopen_dataset(tmp_path, config):
+    store=EvidenceStore(tmp_path/'owner.sqlite')
+    service=HoldoutService(store,tmp_path/'sealed',tmp_path/'research')
+    strategy=StrategySpec(family='no_trade')
+    for name in ('first','renamed'):
+        service.preregister(name,'a'*64,config,strategy)
+    with pytest.raises(FileNotFoundError):
+        service.evaluate_once('first','a'*64,config,strategy)
+    with pytest.raises(PermissionError,match='dataset already consumed'):
+        service.evaluate_once('renamed','a'*64,config,strategy)
+
+
+def test_source_archive_corruption_not_reused(tmp_path):
+    from qarevin.experiments import snapshot_sources
+    import zipfile
+    snapshot=snapshot_sources(tmp_path)
+    (tmp_path/snapshot['archive']).write_bytes(b'partial zip')
+    with pytest.raises((ValueError,zipfile.BadZipFile)):
+        snapshot_sources(tmp_path)

@@ -102,9 +102,18 @@ class EvidenceStore:
             previous = row['entry_hash']
         return True
 
+    def audit_anchor(self) -> dict:
+        with self.transaction() as db:
+            row = db.execute('SELECT sequence,entry_hash FROM audit_ledger ORDER BY sequence DESC LIMIT 1').fetchone()
+        return {'sequence': row['sequence'] if row else 0, 'head_hash': row['entry_hash'] if row else '0' * 64}
+
     def backup(self, destination: Path) -> None:
         registry = Registry(self.path)
         try:
             registry.backup(destination)
         finally:
             registry.close()
+        from qarevin.domain import file_digest
+        restored = EvidenceStore(destination)
+        destination.with_suffix(destination.suffix + '.anchor.json').write_text(canonical_json(
+            {'database_sha256': file_digest(destination), 'audit': restored.audit_anchor()}))

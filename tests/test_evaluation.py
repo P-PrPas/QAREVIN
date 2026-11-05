@@ -62,3 +62,42 @@ def test_robustness_cannot_accept_unconfigured_or_duplicate_neighborhood(config)
     strategy = StrategySpec(family='trend')
     with pytest.raises(ValueError,match='distinct'):
         campaign(make_bars(120), config, strategy, [strategy,strategy], [])
+
+
+def test_profitable_fold_then_drawdown_rebases_peak(monkeypatch, config):
+    import qarevin.walkforward as wf
+    def simulated(bars, config, strategy, start, end):
+        test_first = start == '2020-01-08T00:00:00Z'
+        test_second = start == '2020-01-09T00:00:00Z'
+        final = 1200. if test_first else 1083. if test_second else 1000.
+        values = [1200., final] if test_second else [1000., final]
+        index = pd.date_range(start, periods=2, freq='h')
+        result = {'initial_equity':1000., 'final_equity':final, 'config_hash':digest(config),
+                  'trades':[{'net_pnl':final-1000.}],
+                  'equity':[{'time':t.isoformat(),'equity':value,'worst_equity':value,'balance':value,
+                             'peak_equity':1200. if test_second else max(1000.,value)} for t,value in zip(index,values)]}
+        result['result_hash']=digest(result)
+        return result
+    import pandas as pd
+    monkeypatch.setattr(wf,'run_window',simulated)
+    folds=[Fold(train_start='2020-01-06T00:00:00Z',validation_start='2020-01-07T00:00:00Z',
+                test_start='2020-01-08T00:00:00Z',test_end='2020-01-09T00:00:00Z'),
+           Fold(train_start='2020-01-07T00:00:00Z',validation_start='2020-01-08T00:00:00Z',
+                test_start='2020-01-09T00:00:00Z',test_end='2020-01-10T00:00:00Z')]
+    report=wf.walk_forward(make_bars(5*1440,'2020-01-06'),config,[StrategySpec(family='no_trade')],folds)
+    assert report['stitched_metrics']['max_drawdown']==pytest.approx(1-1083/1200)
+
+
+def test_walkforward_registers_each_trial_before_result(tmp_path, config):
+    from qarevin.evidence import EvidenceStore
+    store=EvidenceStore(tmp_path/'registry.sqlite')
+    bars=make_bars(4*1440,'2020-01-06')
+    fold=Fold(train_start='2020-01-06T00:00:00Z',validation_start='2020-01-07T00:00:00Z',
+              test_start='2020-01-08T00:00:00Z',test_end='2020-01-09T00:00:00Z')
+    for _ in range(2):
+        result=walk_forward(bars,config,[StrategySpec(family='no_trade')],[fold],store=store)
+        assert result['ledger_registered']
+    assert len(store.list('trial'))==2
+    assert len(store.list('walk_forward_protocol'))==1
+    assert len(store.list('walk_forward_run'))==2
+    assert store.verify_audit()

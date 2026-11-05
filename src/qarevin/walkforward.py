@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 from datetime import datetime
+import uuid
+import hashlib
 
 import pandas as pd
 from pydantic import model_validator
 
 from qarevin.backtest import run_backtest
-from qarevin.domain import Contract, ResearchConfig, digest
+from qarevin.domain import Contract, ResearchConfig, digest, source_identity, utc_now
 from qarevin.evaluation import evaluate, metrics
 from qarevin.strategies import StrategySpec, signals
 
@@ -55,9 +57,23 @@ def run_window(bars: pd.DataFrame, config: ResearchConfig, strategy: StrategySpe
                         signal_frame=decision)
 
 
-def walk_forward(bars: pd.DataFrame, config: ResearchConfig, candidates: list[StrategySpec], folds: list[Fold]) -> dict:
+def walk_forward(bars: pd.DataFrame, config: ResearchConfig, candidates: list[StrategySpec], folds: list[Fold], *, store=None) -> dict:
     if not candidates or len(candidates) > 12 or not folds:
         raise ValueError('require 1..12 candidates and at least one fold')
+    if bars.empty:
+        return {'status': 'insufficient_evidence', 'reason': 'empty data', 'promotion_ready': False}
+    if bars.index.max() >= pd.Timestamp('2025-01-01T00:00:00Z'):
+        raise PermissionError('walk-forward cannot access sealed tail')
+    for fold in folds:
+        if pd.Timestamp(fold.train_start) < bars.index.min() or pd.Timestamp(fold.test_end) > bars.index.max() + pd.Timedelta(minutes=1):
+            return {'status': 'insufficient_evidence', 'reason': 'fold outside dataset coverage', 'promotion_ready': False}
+    run_id = uuid.uuid4().hex
+    if store:
+        protocol_id = store.put('walk_forward_protocol', {'folds': [fold.model_dump() for fold in folds],
+                                'candidates': [item.model_dump() for item in candidates],
+                                'config_hash': digest(config), 'source_hash': source_identity(),
+                                'bars_hash': hashlib.sha256(pd.util.hash_pandas_object(bars, index=True).values.tobytes()).hexdigest()})
+        store.put('walk_forward_run', {'protocol_id': protocol_id, 'started_at': utc_now()}, identity=run_id)
     prior_end = None
     outputs, attempts = [], []
     for fold in folds:
@@ -66,12 +82,24 @@ def walk_forward(bars: pd.DataFrame, config: ResearchConfig, candidates: list[St
         prior_end = pd.Timestamp(fold.test_end)
         choices = []
         for candidate in candidates:
-            training = run_window(bars, config, candidate, fold.train_start, fold.validation_start)
-            validation = run_window(bars, config, candidate, fold.validation_start, fold.test_start)
+            trial_id = digest({'run_id': run_id, 'fold': fold.model_dump(), 'candidate': candidate.model_dump()})
+            if store:
+                store.put('trial', {'run_id': run_id, 'fold': fold.model_dump(), 'candidate': candidate.model_dump()}, identity=trial_id)
+                store.audit('trial_started', {'trial_id': trial_id})
+            try:
+                training = run_window(bars, config, candidate, fold.train_start, fold.validation_start)
+                validation = run_window(bars, config, candidate, fold.validation_start, fold.test_start)
+            except Exception as exc:
+                if store:
+                    store.audit('trial_failed', {'trial_id': trial_id, 'error_type': type(exc).__name__})
+                raise
             score = metrics(validation)
             attempts.append({'fold': fold.model_dump(), 'strategy': candidate.model_dump(),
                              'train_hash': training['result_hash'], 'validation_hash': validation['result_hash'],
-                             'validation_metrics': score})
+                             'validation_metrics': score, 'training_use': 'diagnostic_only'})
+            if store:
+                store.put('trial_result', attempts[-1], identity=trial_id)
+                store.audit('trial_succeeded', {'trial_id': trial_id})
             choices.append((score['net_pnl'], -score['max_drawdown'], digest(candidate), candidate))
         selected = max(choices, key=lambda row: row[:3])[3]
         result = run_window(bars, config, selected, fold.test_start, fold.test_end)
@@ -83,7 +111,7 @@ def walk_forward(bars: pd.DataFrame, config: ResearchConfig, candidates: list[St
     for output in outputs:
         result = output['result']
         for sample in result['equity']:
-            stitched.append(sample | {key: sample[key] * scale for key in ('equity', 'worst_equity', 'balance')})
+            stitched.append(sample | {key: sample[key] * scale for key in ('equity', 'worst_equity', 'balance', 'peak_equity')})
         trades.extend(trade | {'net_pnl': trade['net_pnl'] * scale} for trade in result['trades'])
         scale *= result['final_equity'] / result['initial_equity']
     aggregate = {'initial_equity': config.initial_equity, 'final_equity': config.initial_equity * scale,
@@ -92,5 +120,7 @@ def walk_forward(bars: pd.DataFrame, config: ResearchConfig, candidates: list[St
     report = {'folds': outputs, 'attempts': attempts, 'split_hash': digest([f.model_dump() for f in folds]),
               'stitched_metrics': metrics(aggregate),
               'limitations': ['stitched rebased independent accounts; not a continuous-risk deployment replay'],
-              'promotion_ready': False}
+              'promotion_ready': False, 'ledger_registered': store is not None}
+    if store:
+        store.put('walk_forward_result', report, identity=run_id)
     return report | {'report_hash': digest(report)}

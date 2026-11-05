@@ -29,7 +29,7 @@ class ResearchCatalog:
         for path in sorted(self.root.glob('*/manifest.json')):
             try:
                 directory = self.directory(path.parent.name)
-            except (ValueError, PermissionError):
+            except (ValueError, OSError, KeyError):
                 continue
             manifest = read_manifest(directory)
             result.append({key: manifest[key] for key in ('id', 'provider', 'symbol', 'rows', 'start', 'end', 'qa')})

@@ -2,6 +2,11 @@
 from __future__ import annotations
 
 import importlib.metadata
+import io
+import os
+import tempfile
+import math
+import sys
 import subprocess
 import zipfile
 from pathlib import Path
@@ -9,7 +14,7 @@ from pathlib import Path
 from qarevin.artifacts import read_artifact, write_artifact
 from qarevin.backtest import run_backtest
 from qarevin.data import load_dataset, read_manifest
-from qarevin.domain import ResearchConfig, canonical_json, digest, file_digest, source_identity
+from qarevin.domain import ResearchConfig, digest, file_digest, source_identity
 from qarevin.evaluation import evaluate
 from qarevin.evidence import EvidenceStore
 from qarevin.strategies import StrategySpec
@@ -20,18 +25,38 @@ def snapshot_sources(store: Path) -> dict:
     files = {'src/' + str(path.relative_to(package.parent)): path.read_bytes() for path in sorted(package.rglob('*.py'))}
     project = package.parents[1]
     for name in ('requirements.lock', 'pyproject.toml'):
-        if (project / name).is_file():
-            files[name] = (project / name).read_bytes()
+        if not (project / name).is_file():
+            raise ValueError('source archive requires checkout with lockfile and pyproject')
+        files[name] = (project / name).read_bytes()
+    versions = {item.metadata['Name']: item.version for item in importlib.metadata.distributions()}
+    files['requirements.environment.txt'] = ''.join(f'{name}=={version}\n' for name, version in sorted(versions.items()) if name.lower() != 'qarevin').encode()
     identity = digest({name: __import__('hashlib').sha256(body).hexdigest() for name, body in files.items()})
     store.mkdir(parents=True, exist_ok=True)
     target = store / (identity + '.zip')
+    def verify():
+        with zipfile.ZipFile(target) as archive:
+            if set(archive.namelist()) != set(files) or any(archive.read(name) != body for name, body in files.items()):
+                raise ValueError('source archive content mismatch')
     if not target.exists():
-        with target.open('xb') as stream:
-            with zipfile.ZipFile(stream, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
-                for name, body in files.items():
-                    info = zipfile.ZipInfo(name, date_time=(2020, 1, 1, 0, 0, 0))
-                    info.compress_type = zipfile.ZIP_DEFLATED
-                    archive.writestr(info, body)
+        encoded = io.BytesIO()
+        with zipfile.ZipFile(encoded, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+            for name, body in files.items():
+                info = zipfile.ZipInfo(name, date_time=(2020, 1, 1, 0, 0, 0))
+                info.compress_type = zipfile.ZIP_DEFLATED
+                archive.writestr(info, body)
+        fd, name = tempfile.mkstemp(prefix='.source-', dir=store)
+        try:
+            with os.fdopen(fd, 'wb') as stream:
+                stream.write(encoded.getvalue())
+                stream.flush()
+                os.fsync(stream.fileno())
+            try:
+                os.link(name, target)
+            except FileExistsError:
+                pass
+        finally:
+            os.unlink(name)
+    verify()
     return {'source_hash': source_identity(), 'archive': target.name, 'archive_sha256': file_digest(target)}
 
 
@@ -54,13 +79,13 @@ def run_experiment(dataset: Path, config: ResearchConfig, strategy: StrategySpec
     environment = {item.metadata['Name']: item.version for item in importlib.metadata.distributions()}
     manifest = {'strategy_id': strategy_id, 'dataset_id': dataset_manifest['id'],
                 'config': config.model_dump(mode='json'), 'hypothesis': hypothesis, 'source': source,
-                'git_commit': commit, 'environment': environment, 'seed': strategy.seed}
+                'git_commit': commit, 'environment': environment, 'python_minor': list(sys.version_info[:2]), 'seed': strategy.seed}
     experiment_id = store.put('experiment', manifest)
     store.audit('experiment_started', {'experiment_id': experiment_id})
     try:
         result = run_backtest(load_dataset(dataset), config, strategy)
         scorecard = evaluate(result, config)
-        payload = {'manifest': manifest, 'result': result, 'scorecard': scorecard}
+        payload = {'manifest': manifest, 'result': result, 'scorecard': scorecard, 'audit_anchor': store.audit_anchor()}
         path = write_artifact(artifacts / 'results', payload)
         store.put('experiment_result', {'artifact': str(path), 'artifact_sha256': path.stem,
                                         'scorecard': scorecard}, identity=experiment_id)
@@ -80,10 +105,27 @@ def replay_experiment(artifact: Path, dataset: Path) -> dict:
         raise ValueError('source identity mismatch; restore archived source/environment first')
     if read_manifest(dataset)['id'] != manifest['dataset_id']:
         raise ValueError('dataset identity mismatch')
+    current = {item.metadata['Name']: item.version for item in importlib.metadata.distributions()}
+    if any(current.get(name) != version for name, version in manifest['environment'].items()) or list(sys.version_info[:2]) != manifest['python_minor']:
+        raise ValueError('environment mismatch; restore archived requirements.environment.txt and Python minor')
     config = ResearchConfig.model_validate(manifest['config'])
     # The strategy is recorded in the deterministic result as well as the registry.
     strategy = StrategySpec.model_validate(saved['result']['strategy'])
     result = run_backtest(load_dataset(dataset), config, strategy)
-    if canonical_json(result) != canonical_json(saved['result']):
-        raise ValueError('reproduction mismatch')
-    return {'reproduced': True, 'result_hash': result['result_hash']}
+    actual = {k: v for k, v in result.items() if k != 'result_hash'}
+    expected = {k: v for k, v in saved['result'].items() if k != 'result_hash'}
+    if not numeric_match(actual, expected):
+        raise ValueError('reproduction mismatch outside abs=1e-8/rel=1e-10 tolerance')
+    return {'reproduced': True, 'result_hash': result['result_hash'],
+            'exact_hash_match': result['result_hash'] == saved['result']['result_hash'],
+            'numeric_tolerance': {'absolute': 1e-8, 'relative': 1e-10}}
+
+
+def numeric_match(left, right) -> bool:
+    if isinstance(left, float) and isinstance(right, (int, float)):
+        return math.isclose(left, right, abs_tol=1e-8, rel_tol=1e-10)
+    if isinstance(left, dict) and isinstance(right, dict):
+        return left.keys() == right.keys() and all(numeric_match(left[key], right[key]) for key in left)
+    if isinstance(left, list) and isinstance(right, list):
+        return len(left) == len(right) and all(numeric_match(a, b) for a, b in zip(left, right))
+    return type(left) is type(right) and left == right

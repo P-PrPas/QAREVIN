@@ -42,7 +42,7 @@ def metrics(result: dict, *, minimum_days: int = 365) -> dict:
         raise ValueError('nonfinite equity')
     if not math.isclose(float(curve.equity.iloc[-1]), final, abs_tol=1e-7):
         raise ValueError('final equity mismatch')
-    peaks = np.maximum.accumulate(np.r_[initial, curve.get("peak_equity", curve.equity).to_numpy()])[1:]
+    peaks = np.maximum.accumulate(np.r_[initial, np.maximum(curve.get("peak_equity", curve.equity).to_numpy(), curve.equity.to_numpy())])[1:]
     worst = np.minimum(curve.equity.to_numpy(), curve.worst_equity.to_numpy())
     dd = float(np.maximum(0, 1 - worst / peaks).max())
     daily = curve.equity.resample('1D').last().ffill()
@@ -53,7 +53,7 @@ def metrics(result: dict, *, minimum_days: int = 365) -> dict:
     pf = winners / losses if losses > 0 else None
     cagr = (final / initial) ** (365.25 / days) - 1 if days >= minimum_days and final > 0 else None
     calmar = cagr / dd if cagr is not None and dd > 0 else None
-    sharpe = float(np.mean(returns) / np.std(returns, ddof=1) * np.sqrt(252)) if len(returns) >= 30 and np.std(returns, ddof=1) > 0 else None
+    sharpe = float(np.mean(returns) / np.std(returns, ddof=1) * np.sqrt(365.25)) if len(returns) >= 30 and np.std(returns, ddof=1) > 0 else None
     score = {'net_pnl': final - initial, 'net_return': final / initial - 1, 'max_drawdown': dd,
              'trade_count': len(pnl), 'profit_factor': pf, 'cagr': cagr, 'calmar': calmar,
              'sharpe': sharpe, 'calendar_days': days,
