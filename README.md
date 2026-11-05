@@ -105,3 +105,10 @@ version mismatches are rejected. Replay reports exact hash equality plus abs=1e-
 reproduction. Audit anchors appear in result artifacts and `.anchor.json` beside database backups;
 keep them with an owner-controlled backup, since a local hash chain alone cannot prevent an
 administrator from rewriting both the database and every local anchor.
+
+The owner-configured WF registry is `--state` (default `~/.local/share/qarevin`), independent of
+output location. Call `robustness.preregister_campaign` first, then `campaign` with the returned
+id; a matching prior registration is mandatory and repeating a target campaign blocks eligibility.
+Owner holdout preregistration requires a passing matching robustness record. Consumption is bound
+to raw-file identity and overlapping UTC ranges, so dataset aliases cannot reopen the same history.
+Identical registered backtests become audited replays of the original artifact.

@@ -4,10 +4,11 @@ from pathlib import Path
 import pandas as pd
 
 from qarevin.data import load_dataset, read_manifest
+from qarevin.domain import RESEARCH_BOUNDARY
 
 
 class ResearchCatalog:
-    def __init__(self, root: Path, accessible_before: str = '2025-01-01T00:00:00Z'):
+    def __init__(self, root: Path, accessible_before: str = RESEARCH_BOUNDARY):
         self.root = root.resolve()
         self.boundary = pd.Timestamp(accessible_before)
         if self.boundary.tz is None:

@@ -14,7 +14,7 @@ from pathlib import Path
 from qarevin.artifacts import read_artifact, write_artifact
 from qarevin.backtest import run_backtest
 from qarevin.data import load_dataset, read_manifest
-from qarevin.domain import ResearchConfig, digest, file_digest, source_identity
+from qarevin.domain import ResearchConfig, digest, file_digest, source_identity, utc_now
 from qarevin.evaluation import evaluate
 from qarevin.evidence import EvidenceStore
 from qarevin.strategies import StrategySpec
@@ -81,6 +81,16 @@ def run_experiment(dataset: Path, config: ResearchConfig, strategy: StrategySpec
                 'config': config.model_dump(mode='json'), 'hypothesis': hypothesis, 'source': source,
                 'git_commit': commit, 'environment': environment, 'python_minor': list(sys.version_info[:2]), 'seed': strategy.seed}
     experiment_id = store.put('experiment', manifest)
+    try:
+        prior = store.get('experiment_result', experiment_id)
+    except KeyError:
+        prior = None
+    if prior is not None:
+        store.audit('experiment_replay_started', {'experiment_id': experiment_id})
+        reproduced = replay_experiment(Path(prior['artifact']), dataset)
+        replay_id = store.put('experiment_replay', {'experiment_id': experiment_id, 'performed_at': utc_now(), **reproduced})
+        store.audit('experiment_replay_succeeded', {'experiment_id': experiment_id, 'replay_id': replay_id})
+        return {'experiment_id': experiment_id, 'artifact': prior['artifact'], 'scorecard': prior['scorecard'], 'replay': reproduced}
     store.audit('experiment_started', {'experiment_id': experiment_id})
     try:
         result = run_backtest(load_dataset(dataset), config, strategy)

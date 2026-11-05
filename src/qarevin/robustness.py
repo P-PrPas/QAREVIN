@@ -5,7 +5,7 @@ import math
 
 from pydantic import Field
 
-from qarevin.domain import Contract, ResearchConfig, digest
+from qarevin.domain import Contract, ResearchConfig, digest, source_identity, utc_now
 from qarevin.evaluation import EvaluationProtocol
 from qarevin.strategies import StrategySpec
 from qarevin.walkforward import Fold, walk_forward
@@ -19,17 +19,20 @@ class RobustnessProtocol(Contract):
 
 
 def campaign(bars, config: ResearchConfig, target: StrategySpec, neighbors: list[StrategySpec],
-             folds: list[Fold], protocol: RobustnessProtocol = RobustnessProtocol(), *, store=None) -> dict:
+             folds: list[Fold], protocol: RobustnessProtocol = RobustnessProtocol(), *, store=None, preregistration_id: str | None = None) -> dict:
     identities = {digest(item) for item in neighbors}
     if len(neighbors) != 2 or len(identities | {digest(target)}) != 3:
         raise ValueError('exactly two distinct preregistered neighbors required')
     if any(item.family != target.family for item in neighbors):
         raise ValueError('parameter neighbors must belong to the same strategy family')
+    registration = registration_body(config, target, neighbors, folds, protocol)
+    previous_campaigns = 0
     if store:
-        from qarevin.domain import source_identity
-        store.put('robustness_preregistration', {'target': target.model_dump(), 'neighbors': [n.model_dump() for n in neighbors],
-                  'folds': [f.model_dump() for f in folds], 'protocol': protocol.model_dump(),
-                  'source_hash': source_identity(), 'config_hash': digest(config)})
+        if not preregistration_id or store.get('robustness_preregistration', preregistration_id) != registration:
+            raise ValueError('matching prior robustness registration required')
+        with store.transaction() as db:
+            previous_campaigns = db.execute("SELECT COUNT(*) FROM objects WHERE kind='robustness_run' AND json_extract(body,'$.target_identity')=?", (digest(target),)).fetchone()[0]
+        store.put('robustness_run', {'preregistration_id': preregistration_id, 'target_identity': digest(target), 'started_at': utc_now()})
     baseline = walk_forward(bars, config, [target], folds, store=store)
     if baseline.get('status') == 'insufficient_evidence':
         return baseline
@@ -45,6 +48,7 @@ def campaign(bars, config: ResearchConfig, target: StrategySpec, neighbors: list
     score = baseline['stitched_metrics']
     gates = {
         'ledger_registered': store is not None,
+        'single_preregistered_campaign': previous_campaigns == 0,
         'stress_sample': all(item['stitched_metrics']['trade_count'] >= max(100, .8 * score['trade_count']) for item in stresses),
         'minimum_folds': len(folds) >= protocol.minimum_folds,
         'profitable_fraction': sum(value > 0 for value in fold_pnl) / len(fold_pnl) >= protocol.minimum_profitable_fraction,
@@ -60,7 +64,7 @@ def campaign(bars, config: ResearchConfig, target: StrategySpec, neighbors: list
         'profit_factor': score['profit_factor'] is not None and score['profit_factor'] > 1.2,
         'calmar': score['calmar'] is not None and math.isfinite(score['calmar']) and score['calmar'] > .5,
     }
-    report = {'target': target.model_dump(), 'config_hash': digest(config), 'split_hash': baseline['split_hash'],
+    report = {'target': target.model_dump(), 'source_hash': source_identity(), 'preregistration_id': preregistration_id, 'config_hash': digest(config), 'split_hash': baseline['split_hash'],
               'evaluation_protocol_hash': digest(EvaluationProtocol()), 'robustness_protocol_hash': digest(protocol),
               'walk_forward': baseline, 'stresses': stresses, 'neighbors': neighborhoods,
               'gates': gates, 'eligible_for_holdout_request': all(gates.values()),
@@ -69,3 +73,13 @@ def campaign(bars, config: ResearchConfig, target: StrategySpec, neighbors: list
     if store:
         store.put('robustness_result', report)
     return report | {'campaign_hash': digest(report)}
+
+
+def registration_body(config, target, neighbors, folds, protocol):
+    return {'target': target.model_dump(), 'neighbors': [n.model_dump() for n in neighbors],
+            'folds': [f.model_dump() for f in folds], 'protocol': protocol.model_dump(),
+            'source_hash': source_identity(), 'config_hash': digest(config)}
+
+
+def preregister_campaign(store, config, target, neighbors, folds, protocol=RobustnessProtocol()):
+    return store.put('robustness_preregistration', registration_body(config,target,neighbors,folds,protocol))

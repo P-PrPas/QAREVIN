@@ -13,6 +13,9 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
+RESEARCH_BOUNDARY = '2025-01-01T00:00:00Z'
+
+
 class Contract(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False, strict=True)
 

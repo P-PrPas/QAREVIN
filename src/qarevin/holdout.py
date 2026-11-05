@@ -4,7 +4,7 @@ from pathlib import Path
 from qarevin.backtest import run_backtest
 from qarevin.data import load_dataset, read_manifest
 import pandas as pd
-from qarevin.domain import ResearchConfig, digest, source_identity
+from qarevin.domain import RESEARCH_BOUNDARY, ResearchConfig, digest, source_identity
 from qarevin.evaluation import evaluate, EvaluationProtocol
 from qarevin.evidence import EvidenceStore
 from qarevin.strategies import StrategySpec
@@ -18,10 +18,13 @@ class HoldoutService:
         if self.root == research or research in self.root.parents or self.root in research.parents:
             raise ValueError('holdout and research stores must be disjoint')
 
-    def preregister(self, campaign: str, dataset_id: str, config: ResearchConfig, strategy: StrategySpec) -> str:
+    def preregister(self, campaign: str, dataset_id: str, config: ResearchConfig, strategy: StrategySpec, robustness_id: str) -> str:
         if not campaign.strip():
             raise ValueError('campaign required')
-        return self.store.put('holdout_campaign', {'campaign': campaign, 'config_hash': digest(config),
+        robust = self.store.get('robustness_result', robustness_id)
+        if not robust.get('eligible_for_holdout_request') or robust.get('config_hash') != digest(config) or robust.get('target') != strategy.model_dump() or robust.get('source_hash') != source_identity():
+            raise PermissionError('passing frozen robustness evidence required')
+        return self.store.put('holdout_campaign' , {'campaign': campaign, 'robustness_id': robustness_id, 'config_hash': digest(config),
                               'strategy_hash': digest(strategy), 'source_hash': source_identity(), 'dataset_id': dataset_id,
                               'evaluation_protocol_hash': digest(EvaluationProtocol())}, identity=campaign)
 
@@ -45,8 +48,18 @@ class HoldoutService:
             if directory.is_symlink() or directory.resolve().parent != self.root:
                 raise ValueError('holdout path escape')
             manifest = read_manifest(directory)
-            if pd.Timestamp(manifest['start']) < pd.Timestamp('2025-01-01T00:00:00Z'):
+            if pd.Timestamp(manifest['start']) < pd.Timestamp(RESEARCH_BOUNDARY):
                 raise PermissionError('holdout overlaps development history')
+            with self.store.transaction() as db:
+                if db.execute('SELECT 1 FROM objects WHERE kind=? AND id=?', ('holdout_raw_access', manifest['raw_sha256'])).fetchone():
+                    raise PermissionError('holdout raw data already consumed')
+                for row in db.execute("SELECT body FROM objects WHERE kind='holdout_span_access'").fetchall():
+                    import json
+                    prior = json.loads(row[0])
+                    if pd.Timestamp(manifest['start']) <= pd.Timestamp(prior['end']) and pd.Timestamp(prior['start']) <= pd.Timestamp(manifest['end']):
+                        raise PermissionError('holdout time range already consumed')
+                self.store.put('holdout_raw_access', {'campaign': campaign}, identity=manifest['raw_sha256'], db=db)
+                self.store.put('holdout_span_access', {'campaign': campaign, 'start': manifest['start'], 'end': manifest['end']}, db=db)
             result = run_backtest(load_dataset(directory), config, strategy)
             report = evaluate(result, config, evidence_kind='holdout')
             self.store.put('holdout_result', report, identity=campaign)

@@ -30,7 +30,7 @@ def test_holdout_consumed_even_when_evaluation_crashes(tmp_path, config):
     store = EvidenceStore(tmp_path/'owner.sqlite')
     service = HoldoutService(store, tmp_path/'sealed', tmp_path/'research')
     strategy = StrategySpec(family='no_trade')
-    service.preregister('campaign1', 'a'*64, config, strategy)
+    service.preregister('campaign1', 'a'*64, config, strategy, robustness_stub(store,config,strategy))
     with pytest.raises(FileNotFoundError):
         service.evaluate_once('campaign1', 'a'*64, config, strategy)
     assert store.get('holdout_access', 'campaign1')['status'] == 'consumed'
@@ -92,7 +92,7 @@ def test_holdout_renaming_campaign_does_not_reopen_dataset(tmp_path, config):
     service=HoldoutService(store,tmp_path/'sealed',tmp_path/'research')
     strategy=StrategySpec(family='no_trade')
     for name in ('first','renamed'):
-        service.preregister(name,'a'*64,config,strategy)
+        service.preregister(name,'a'*64,config,strategy,robustness_stub(store,config,strategy))
     with pytest.raises(FileNotFoundError):
         service.evaluate_once('first','a'*64,config,strategy)
     with pytest.raises(PermissionError,match='dataset already consumed'):
@@ -106,3 +106,44 @@ def test_source_archive_corruption_not_reused(tmp_path):
     (tmp_path/snapshot['archive']).write_bytes(b'partial zip')
     with pytest.raises((ValueError,zipfile.BadZipFile)):
         snapshot_sources(tmp_path)
+
+
+def robustness_stub(store, config, strategy):
+    # Owner-controlled evidence stub isolates holdout lifecycle fault tests.
+    from qarevin.domain import digest, source_identity
+    return store.put('robustness_result', {'eligible_for_holdout_request': True,
+                     'config_hash': digest(config), 'target': strategy.model_dump(), 'source_hash': source_identity()})
+
+
+def test_identical_experiment_is_recorded_as_replay(tmp_path, config):
+    source=Path(__file__).parent/'fixtures/m1.csv'
+    manifest=import_csv(source,tmp_path/'datasets',source_timezone='UTC',provider='test',symbol='gold')
+    store=EvidenceStore(tmp_path/'registry.sqlite')
+    args=(tmp_path/'datasets'/manifest['id'],config,StrategySpec(family='no_trade'),
+          'Identical input replay keeps original result immutable',store,tmp_path/'artifacts')
+    first=run_experiment(*args)
+    repeated=run_experiment(*args)
+    assert first['artifact']==repeated['artifact'] and repeated['replay']['reproduced']
+    assert len(store.list('experiment_replay'))==1
+    assert len(list((tmp_path/'artifacts/results').glob('*.json')))==1
+
+
+def test_holdout_alias_raw_and_overlapping_range_are_consumed(tmp_path, config):
+    store=EvidenceStore(tmp_path/'owner.sqlite')
+    service=HoldoutService(store,tmp_path/'sealed',tmp_path/'research')
+    strategy=StrategySpec(family='no_trade')
+    source=tmp_path/'future.csv'
+    source.write_text('timestamp,open,high,low,close\n2025-01-02T07:00:00,1500,1501,1499,1500\n')
+    first=import_csv(source,tmp_path/'sealed',source_timezone='UTC',provider='a',symbol='gold',accessible_before='2100-01-01')
+    second=import_csv(source,tmp_path/'sealed',source_timezone='UTC',provider='b',symbol='gold',accessible_before='2099-01-01')
+    robust=robustness_stub(store,config,strategy)
+    service.preregister('one',first['id'],config,strategy,robust)
+    service.preregister('alias',second['id'],config,strategy,robust)
+    service.evaluate_once('one',first['id'],config,strategy)
+    with pytest.raises(PermissionError,match='raw data already consumed'):
+        service.evaluate_once('alias',second['id'],config,strategy)
+    source.write_text(source.read_text().replace('1501','1502'))
+    overlap=import_csv(source,tmp_path/'sealed',source_timezone='UTC',provider='c',symbol='gold',accessible_before='2100-01-01')
+    service.preregister('overlap',overlap['id'],config,strategy,robust)
+    with pytest.raises(PermissionError,match='time range already consumed'):
+        service.evaluate_once('overlap',overlap['id'],config,strategy)

@@ -9,7 +9,7 @@ import pandas as pd
 from pydantic import model_validator
 
 from qarevin.backtest import run_backtest
-from qarevin.domain import Contract, ResearchConfig, digest, source_identity, utc_now
+from qarevin.domain import RESEARCH_BOUNDARY, Contract, ResearchConfig, digest, source_identity, utc_now
 from qarevin.evaluation import evaluate, metrics
 from qarevin.strategies import StrategySpec, signals
 
@@ -62,9 +62,12 @@ def walk_forward(bars: pd.DataFrame, config: ResearchConfig, candidates: list[St
         raise ValueError('require 1..12 candidates and at least one fold')
     if bars.empty:
         return {'status': 'insufficient_evidence', 'reason': 'empty data', 'promotion_ready': False}
-    if bars.index.max() >= pd.Timestamp('2025-01-01T00:00:00Z'):
+    if bars.index.max() >= pd.Timestamp(RESEARCH_BOUNDARY):
         raise PermissionError('walk-forward cannot access sealed tail')
     for fold in folds:
+        windows = ((fold.train_start, fold.validation_start), (fold.validation_start, fold.test_start), (fold.test_start, fold.test_end))
+        if any(not ((bars.index >= pd.Timestamp(a)) & (bars.index < pd.Timestamp(b))).any() for a, b in windows):
+            return {'status': 'insufficient_evidence', 'reason': 'empty fold segment', 'promotion_ready': False}
         if pd.Timestamp(fold.train_start) < bars.index.min() or pd.Timestamp(fold.test_end) > bars.index.max() + pd.Timedelta(minutes=1):
             return {'status': 'insufficient_evidence', 'reason': 'fold outside dataset coverage', 'promotion_ready': False}
     run_id = uuid.uuid4().hex
@@ -89,11 +92,12 @@ def walk_forward(bars: pd.DataFrame, config: ResearchConfig, candidates: list[St
             try:
                 training = run_window(bars, config, candidate, fold.train_start, fold.validation_start)
                 validation = run_window(bars, config, candidate, fold.validation_start, fold.test_start)
+                score = metrics(validation)
             except Exception as exc:
                 if store:
                     store.audit('trial_failed', {'trial_id': trial_id, 'error_type': type(exc).__name__})
+                    store.put('walk_forward_outcome', {'status': 'failed', 'error_type': type(exc).__name__}, identity=run_id)
                 raise
-            score = metrics(validation)
             attempts.append({'fold': fold.model_dump(), 'strategy': candidate.model_dump(),
                              'train_hash': training['result_hash'], 'validation_hash': validation['result_hash'],
                              'validation_metrics': score, 'training_use': 'diagnostic_only'})
@@ -102,9 +106,16 @@ def walk_forward(bars: pd.DataFrame, config: ResearchConfig, candidates: list[St
                 store.audit('trial_succeeded', {'trial_id': trial_id})
             choices.append((score['net_pnl'], -score['max_drawdown'], digest(candidate), candidate))
         selected = max(choices, key=lambda row: row[:3])[3]
-        result = run_window(bars, config, selected, fold.test_start, fold.test_end)
+        try:
+            result = run_window(bars, config, selected, fold.test_start, fold.test_end)
+            scorecard = evaluate(result, config, evidence_kind='walk_forward')
+        except Exception as exc:
+            if store:
+                store.audit('outer_test_failed', {'run_id': run_id, 'error_type': type(exc).__name__})
+                store.put('walk_forward_outcome', {'status': 'failed', 'error_type': type(exc).__name__}, identity=run_id)
+            raise
         outputs.append({'fold': fold.model_dump(), 'selected': selected.model_dump(), 'result': result,
-                        'scorecard': evaluate(result, config, evidence_kind='walk_forward')})
+                        'scorecard': scorecard})
     # Independent fold accounts are rebased only for diagnostic stitched equity, not a deployable portfolio.
     scale = 1.0
     stitched, trades = [], []
@@ -123,4 +134,5 @@ def walk_forward(bars: pd.DataFrame, config: ResearchConfig, candidates: list[St
               'promotion_ready': False, 'ledger_registered': store is not None}
     if store:
         store.put('walk_forward_result', report, identity=run_id)
+        store.put('walk_forward_outcome', {'status': 'completed'}, identity=run_id)
     return report | {'report_hash': digest(report)}

@@ -57,6 +57,7 @@ def _main(argv: list[str] | None = None) -> None:
     walk.add_argument("dataset", type=Path)
     walk.add_argument("--config", required=True, type=Path)
     walk.add_argument("--protocol", required=True, type=Path, help="JSON with candidates and exact folds")
+    walk.add_argument("--state", type=Path, default=Path.home() / ".local/share/qarevin")
     walk.add_argument("--output", type=Path, required=True)
     backup = sub.add_parser("backup")
     backup.add_argument("registry", type=Path)
@@ -93,7 +94,7 @@ def _main(argv: list[str] | None = None) -> None:
         result = walk_forward(load_dataset(args.dataset), load_config(args.config),
                               [StrategySpec.model_validate(item) for item in protocol["candidates"]],
                               [Fold.model_validate(item) for item in protocol["folds"]],
-                              store=EvidenceStore(args.output / "registry.sqlite"))
+                              store=EvidenceStore(args.state / "registry.sqlite"))
         print(json.dumps({"artifact": str(write_artifact(args.output, result))}))
     elif args.command == "backup":
         from qarevin.evidence import EvidenceStore
