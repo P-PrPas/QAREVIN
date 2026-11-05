@@ -65,6 +65,8 @@ class InstrumentSpec(Contract):
         for value in (self.volume_min, self.volume_max):
             if not math.isclose(value / self.volume_step, round(value / self.volume_step), abs_tol=1e-8):
                 raise ValueError("volume bounds must align with step")
+        if not math.isclose(self.tick_size / self.point, round(self.tick_size / self.point), abs_tol=1e-8):
+            raise ValueError("tick_size must align with point")
         if self.tick_size < self.point:
             raise ValueError("tick_size below point")
         if self.volume_max < self.volume_min:
@@ -156,10 +158,15 @@ def load_config(path: Path) -> ResearchConfig:
 
 def version_identity(config: ResearchConfig) -> str:
     from qarevin import __version__
-    return digest({"schema_version": 1, "package_version": __version__, "config": config.model_dump(mode="json")})
+    return digest({"schema_version": 1, "package_version": __version__, "source_hash": source_identity(), "config": config.model_dump(mode="json")})
 
 
 def finite(value: float, name: str) -> float:
     if not math.isfinite(value):
         raise ValueError(f"{name} must be finite")
     return value
+
+
+def source_identity() -> str:
+    root = Path(__file__).parent
+    return digest({str(path.relative_to(root)): file_digest(path) for path in sorted(root.rglob("*.py"))})

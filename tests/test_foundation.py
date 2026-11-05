@@ -79,3 +79,15 @@ def test_cli_errors_do_not_echo_payload(capsys, tmp_path):
         main(['config-check', str(path)])
     assert exc.value.code == 2
     assert 'sensitive' not in capsys.readouterr().out
+
+
+def test_final_review_edge_cases(config, tmp_path, caplog):
+    import logging
+    from qarevin.audit import event
+    from qarevin.domain import InstrumentSpec, source_identity
+    with pytest.raises(ValidationError):
+        InstrumentSpec.model_validate(config.instrument.model_dump() | {'tick_size': 0.015})
+    with caplog.at_level(logging.INFO):
+        event(logging.getLogger('test'), 'failed', duration_seconds=float('nan'))
+    assert 'NaN' not in caplog.text and 'failed' in caplog.text
+    assert len(source_identity()) == 64

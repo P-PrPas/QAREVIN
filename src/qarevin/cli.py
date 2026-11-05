@@ -31,7 +31,7 @@ def _main(argv: list[str] | None = None) -> None:
 def main(argv: list[str] | None = None) -> None:
     try:
         _main(argv)
-    except (ValueError, OSError, KeyError) as exc:
+    except (ValueError, OSError, KeyError, RecursionError) as exc:
         print(json.dumps({"valid": False, "error_type": type(exc).__name__}))
         raise SystemExit(2) from None
 

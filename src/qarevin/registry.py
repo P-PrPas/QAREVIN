@@ -9,6 +9,7 @@ class Registry:
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(path, timeout=30)
+        path.chmod(0o600)
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA foreign_keys=ON")
         self.db.executescript('''
@@ -22,8 +23,12 @@ class Registry:
         self.db.commit()
 
     def backup(self, destination: Path) -> None:
-        with sqlite3.connect(destination) as target:
+        target = sqlite3.connect(destination)
+        try:
+            destination.chmod(0o600)
             self.db.backup(target)
+        finally:
+            target.close()
 
     def close(self) -> None:
         self.db.close()
