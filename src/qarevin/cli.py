@@ -74,7 +74,8 @@ def _main(argv: list[str] | None = None) -> None:
         from qarevin.evidence import EvidenceStore
         from qarevin.research import ResearchService
         from qarevin.worker import run_one
-        service = ResearchService(EvidenceStore(args.state / "registry.sqlite"), ResearchCatalog(args.datasets), load_config(args.config))
+        config = load_config(args.config)
+        service = ResearchService(EvidenceStore(args.state / "registry.sqlite"), ResearchCatalog(args.datasets, config.research_access_before), config)
         while True:
             try:
                 answer = run_one(service)

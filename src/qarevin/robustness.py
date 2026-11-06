@@ -64,7 +64,7 @@ def campaign(bars, config: ResearchConfig, target: StrategySpec, neighbors: list
         'profit_factor': score['profit_factor'] is not None and score['profit_factor'] > 1.2,
         'calmar': score['calmar'] is not None and math.isfinite(score['calmar']) and score['calmar'] > .5,
     }
-    report = {'target': target.model_dump(), 'source_hash': source_identity(), 'preregistration_id': preregistration_id, 'config_hash': digest(config), 'split_hash': baseline['split_hash'],
+    report = {'target': target.model_dump(), 'source_hash': source_identity(), 'preregistration_id': preregistration_id, 'config_hash': digest(config), 'split_hash': baseline['split_hash'], 'bars_hash': baseline['bars_hash'],
               'evaluation_protocol_hash': digest(EvaluationProtocol()), 'robustness_protocol_hash': digest(protocol),
               'walk_forward': baseline, 'stresses': stresses, 'neighbors': neighborhoods,
               'gates': gates, 'eligible_for_holdout_request': all(gates.values()),

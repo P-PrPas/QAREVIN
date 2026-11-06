@@ -121,6 +121,8 @@ class SessionPolicy(Contract):
 
 
 class ResearchConfig(Contract):
+    research_access_before: str = Field(default=RESEARCH_BOUNDARY,validate_default=True)
+    released_data_record_hash: str | None = Field(default=None,pattern=r'^[a-f0-9]{64}$')
     environment: Literal["research"] = "research"
     initial_equity: float = Field(default=1000, gt=0)
     daily_experiments: int = Field(default=5, ge=1, le=20)
@@ -131,6 +133,20 @@ class ResearchConfig(Contract):
     costs: CostModel
     risk: RiskPolicy = RiskPolicy()
     session: SessionPolicy
+
+    @field_validator('research_access_before')
+    @classmethod
+    def access_boundary(cls,value):
+        stamp=datetime.fromisoformat(value.replace('Z','+00:00'))
+        if stamp.tzinfo is None:
+            raise ValueError('research boundary must be timezone-aware')
+        return stamp.astimezone(timezone.utc).isoformat()
+
+    @model_validator(mode='after')
+    def released_data_policy(self):
+        if datetime.fromisoformat(self.research_access_before)>datetime.fromisoformat(RESEARCH_BOUNDARY.replace('Z','+00:00')) and not self.released_data_record_hash:
+            raise ValueError('extending research access requires owner release-record hash')
+        return self
 
     def require_demo_ready(self) -> None:
         if not all((self.instrument.verified, self.costs.verified, self.session.verified)):

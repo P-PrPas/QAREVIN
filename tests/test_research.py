@@ -196,3 +196,8 @@ def test_permission_denials_are_audited_and_coalesced(service,monkeypatch):
     assert client.get('/api/v1/datasets').status_code==403
     with service.store.read() as db:
         assert db.execute("SELECT COUNT(*) FROM audit_ledger WHERE event='request_denied'").fetchone()[0]==1
+
+
+def test_catalog_boundary_cannot_disagree_with_frozen_worker_config(service):
+    with pytest.raises(ValueError,match='boundaries must match'):
+        ResearchService(service.store,ResearchCatalog(service.catalog.root,'2027-01-01T00:00:00Z'),service.config)

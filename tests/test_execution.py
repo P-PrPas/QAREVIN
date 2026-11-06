@@ -304,3 +304,39 @@ def test_new_loss_breach_flattens_during_static_reconciliation_failure(tmp_path,
         with pytest.raises(SafetyStop):
             runner.watchdog(NOW)
         assert broker.get_positions()==[] and runner.state()['daily_halted']
+
+
+def test_restart_after_missed_cutoff_flattens_prior_day_exposure(tmp_path,ready_config):
+    runner,broker=create(tmp_path,ready_config)
+    runner.start_demo(NOW)
+    runner.submit(signal(),NOW)
+    runner.close()
+    restarted,_=create(tmp_path,ready_config,broker)
+    with restarted:
+        next_day=NOW+timedelta(days=1)
+        broker.quote=broker.quote.model_copy(update={'timestamp':next_day})
+        state=restarted.watchdog(next_day)
+        assert broker.get_positions()==[] and not state['overnight_cleanup_required']
+        with restarted.store.read() as db:
+            assert db.execute("SELECT COUNT(*) FROM audit_ledger WHERE event='missed_cutoff_cleanup'").fetchone()[0]==1
+
+
+@pytest.mark.parametrize('with_trade',[False,True])
+def test_missing_persistent_risk_basis_cannot_reset_existing_deployment(tmp_path,ready_config,with_trade):
+    runner,broker=create(tmp_path,ready_config)
+    with runner:
+        runner.start_demo(NOW)
+        if with_trade:
+            runner.submit(signal(),NOW)
+        with runner.store.transaction() as db:
+            db.execute('DELETE FROM execution_state')
+        with pytest.raises(SafetyStop,match='risk basis missing'):
+            runner.start_demo(NOW)
+
+
+def test_execution_state_cannot_share_pre_agent_research_registry(tmp_path,ready_config):
+    from qarevin.evidence import EvidenceStore
+    store=EvidenceStore(tmp_path/'demo.sqlite')
+    store.put('experiment',{'research_only':True})
+    with pytest.raises(SafetyStop,match='separate'):
+        create(tmp_path,ready_config)

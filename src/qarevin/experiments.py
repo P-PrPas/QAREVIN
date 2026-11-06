@@ -87,10 +87,11 @@ def run_experiment(dataset: Path, config: ResearchConfig, strategy: StrategySpec
         prior = None
     if prior is not None:
         store.audit('experiment_replay_started', {'experiment_id': experiment_id})
-        reproduced = replay_experiment(Path(prior['artifact']), dataset)
+        replay_path = artifacts / 'results' / (prior['artifact_sha256'] + '.json')
+        reproduced = replay_experiment(replay_path, dataset)
         replay_id = store.put('experiment_replay', {'experiment_id': experiment_id, 'performed_at': utc_now(), **reproduced})
         store.audit('experiment_replay_succeeded', {'experiment_id': experiment_id, 'replay_id': replay_id})
-        return {'experiment_id': experiment_id, 'artifact': prior['artifact'], 'scorecard': prior['scorecard'], 'replay': reproduced}
+        return {'experiment_id': experiment_id, 'artifact': str(replay_path), 'scorecard': prior['scorecard'], 'replay': reproduced}
     store.audit('experiment_started', {'experiment_id': experiment_id})
     try:
         result = run_backtest(load_dataset(dataset), config, strategy)

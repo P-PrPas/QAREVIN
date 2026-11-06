@@ -48,7 +48,7 @@ class DemoRunner:
             raise SafetyStop('single execution writer already running') from None
         try:
             with self.store.transaction() as db:
-                if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='jobs'").fetchone():
+                if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='jobs'").fetchone() or db.execute("SELECT 1 FROM objects WHERE kind IN ('dataset','strategy','experiment','experiment_result','hypothesis','candidate','job_result','memory') OR kind LIKE 'walk_forward_%' OR kind LIKE 'robustness_%' OR kind LIKE 'approval_%'").fetchone():
                     raise SafetyStop('execution state must be separate from research')
                 db.executescript('''
                     CREATE TABLE IF NOT EXISTS execution_state(id INTEGER PRIMARY KEY CHECK(id=1),body TEXT NOT NULL);
@@ -109,10 +109,14 @@ class DemoRunner:
         account=self._account()
         day=now.astimezone(__import__('zoneinfo').ZoneInfo(self.config.risk.risk_day_timezone)).date().isoformat()
         state=self.state()
-        if state is None:
+        initial=state is None
+        if initial:
+            with self.store.read() as db:
+                if db.execute('SELECT 1 FROM intents LIMIT 1').fetchone() or db.execute("SELECT 1 FROM objects WHERE kind='risk_basis_initialized'").fetchone():
+                    raise SafetyStop('risk basis missing; owner recovery required')
             state={'day':day,'day_start':account.equity,'high_water':account.equity,
                    'cash_flow':account.cumulative_cash_flow,'daily_halted':False,'permanent_halted':False,
-                   'pending_ack_reasons':[],'requires_ack':False,'ack_reason':None,'paused':True,'mode':'reconciling','reason':'owner_activation_required','last_observed':now.isoformat()}
+                   'overnight_cleanup_required':False,'pending_ack_reasons':[],'requires_ack':False,'ack_reason':None,'paused':True,'mode':'reconciling','reason':'owner_activation_required','last_observed':now.isoformat()}
         if now < datetime.fromisoformat(state['last_observed']):
             raise SafetyStop('clock moved backwards')
         state['last_observed']=now.isoformat()
@@ -123,7 +127,7 @@ class DemoRunner:
         if min(state['day_start'],state['high_water'])<=0:
             raise SafetyStop('invalid cash-flow adjusted risk basis')
         if state['day']!=day:
-            state.update(day=day,day_start=account.equity,daily_halted=False)
+            state.update(day=day,day_start=account.equity,daily_halted=False,overnight_cleanup_required=True)
         state['high_water']=max(state['high_water'],account.equity)
         if account.equity<=state['day_start']*(1-self.config.risk.daily_loss):
             state['daily_halted']=True
@@ -131,7 +135,10 @@ class DemoRunner:
         if account.equity<=state['high_water']*(1-self.config.risk.max_drawdown):
             state['permanent_halted']=True
             state['reason']='drawdown'
-        self.save_state(state)
+        with self.store.transaction() as db:
+            if initial:
+                self.store.put('risk_basis_initialized',{'day':day,'initial_equity':account.equity,'at':now.isoformat()},identity='initial',db=db)
+            self.save_state(state,db=db)
         return account,state
 
     def _persist_result(self,identifier: str,result: OrderResult):
@@ -182,6 +189,12 @@ class DemoRunner:
                 if cancelled.state!='cancelled':
                     raise SafetyStop('pending order cancellation not confirmed')
                 self._persist_result(pending.client_order_id,cancelled)
+            if state.get('overnight_cleanup_required'):
+                self.store.audit('missed_cutoff_cleanup',{'risk_day':state['day']})
+                self.flatten_known_positions()
+                state['overnight_cleanup_required']=False
+                self.save_state(state)
+                account,state=self._risk_state(now)
             positions=self.broker.get_positions()
             if len(positions)>self.config.risk.max_positions:
                 raise SafetyStop('position limit exceeded')
@@ -390,12 +403,15 @@ class DemoRunner:
             try:
                 account=self._account_identity(for_exit=True)
                 if prior:
+                    risk_day=now.astimezone(__import__('zoneinfo').ZoneInfo(self.config.risk.risk_day_timezone)).date().isoformat()
+                    if risk_day!=prior['day'] and now>=datetime.fromisoformat(prior['last_observed']):
+                        prior['overnight_cleanup_required']=True
                     prior['daily_halted'] |= account.equity<=prior['day_start']*(1-self.config.risk.daily_loss)
                     prior['permanent_halted'] |= account.equity<=prior['high_water']*(1-self.config.risk.max_drawdown)
                     self.save_state(prior)
             except Exception:
                 raise SafetyStop('cannot confirm demo account for emergency risk reduction') from None
-            if cutoff or prior.get('daily_halted') or prior.get('permanent_halted'):
+            if cutoff or prior.get('overnight_cleanup_required') or prior.get('daily_halted') or prior.get('permanent_halted'):
                 # Identity is rechecked inside flatten; a static contract failure must not bypass exits.
                 self.store.audit('safety_exit_after_reconcile_failure',{'cutoff':cutoff})
                 self.flatten_known_positions()
