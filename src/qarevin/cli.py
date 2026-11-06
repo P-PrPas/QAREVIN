@@ -37,8 +37,70 @@ def _main(argv: list[str] | None = None) -> None:
     replay.add_argument("--config", required=True, type=Path)
     report = sub.add_parser("report")
     report.add_argument("artifact", type=Path)
+    evaluation = sub.add_parser("evaluate")
+    evaluation.add_argument("artifact", type=Path)
+    evaluation.add_argument("--config", required=True, type=Path)
+    comparison = sub.add_parser("compare")
+    comparison.add_argument("baseline", type=Path)
+    comparison.add_argument("challenger", type=Path)
+    comparison.add_argument("--config", required=True, type=Path)
+    experiment = sub.add_parser("experiment")
+    experiment.add_argument("dataset", type=Path)
+    experiment.add_argument("--config", type=Path, required=True)
+    experiment.add_argument("--family", required=True, choices=["trend", "mean_reversion", "breakout", "no_trade", "random"])
+    experiment.add_argument("--hypothesis", required=True)
+    experiment.add_argument("--state", type=Path, required=True)
+    reproduce = sub.add_parser("replay-experiment")
+    reproduce.add_argument("artifact", type=Path)
+    reproduce.add_argument("dataset", type=Path)
+    walk = sub.add_parser("walk-forward")
+    walk.add_argument("dataset", type=Path)
+    walk.add_argument("--config", required=True, type=Path)
+    walk.add_argument("--protocol", required=True, type=Path, help="JSON with candidates and exact folds")
+    walk.add_argument("--state", type=Path, default=Path.home() / ".local/share/qarevin")
+    walk.add_argument("--output", type=Path, required=True)
+    backup = sub.add_parser("backup")
+    backup.add_argument("registry", type=Path)
+    backup.add_argument("destination", type=Path)
     args = parser.parse_args(argv)
-    if args.command == "import":
+    if args.command in ("evaluate", "compare"):
+        from qarevin.artifacts import read_artifact
+        from qarevin.evaluation import compare, evaluate
+        config = load_config(args.config)
+        if args.command == "evaluate":
+            answer = evaluate(read_artifact(args.artifact)["result"], config)
+        else:
+            answer = compare(evaluate(read_artifact(args.baseline)["result"], config),
+                             evaluate(read_artifact(args.challenger)["result"], config))
+        print(json.dumps(answer, indent=2))
+    elif args.command == "experiment":
+        from qarevin.evidence import EvidenceStore
+        from qarevin.experiments import run_experiment
+        from qarevin.strategies import StrategySpec
+        answer = run_experiment(args.dataset, load_config(args.config), StrategySpec(family=args.family),
+                                args.hypothesis, EvidenceStore(args.state / "registry.sqlite"), args.state / "artifacts")
+        print(json.dumps(answer))
+    elif args.command == "replay-experiment":
+        from qarevin.experiments import replay_experiment
+        print(json.dumps(replay_experiment(args.artifact, args.dataset)))
+    elif args.command == "walk-forward":
+        from qarevin.artifacts import write_artifact
+        from qarevin.data import load_dataset
+        from qarevin.domain import unique_json
+        from qarevin.strategies import StrategySpec
+        from qarevin.walkforward import Fold, walk_forward
+        from qarevin.evidence import EvidenceStore
+        protocol = unique_json(args.protocol.read_text())
+        result = walk_forward(load_dataset(args.dataset), load_config(args.config),
+                              [StrategySpec.model_validate(item) for item in protocol["candidates"]],
+                              [Fold.model_validate(item) for item in protocol["folds"]],
+                              store=EvidenceStore(args.state / "registry.sqlite"))
+        print(json.dumps({"artifact": str(write_artifact(args.output, result))}))
+    elif args.command == "backup":
+        from qarevin.evidence import EvidenceStore
+        EvidenceStore(args.registry).backup(args.destination)
+        print(json.dumps({"backup": str(args.destination)}))
+    elif args.command == "import":
         from qarevin.data import import_csv
         print(json.dumps(import_csv(args.source, args.store, source_timezone=args.timezone,
                                     provider=args.provider, symbol=args.symbol,

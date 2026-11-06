@@ -63,3 +63,52 @@ at the next available quote; entries expire when the immediate execution event i
 Spread used is `max(bar_spread, model_floor) * spread_multiplier`, preventing CSV spread from
 bypassing conservative assumptions or stress tests. Results contain lot-fill/skip counts.
 Equity is summarized hourly while retaining M1 adverse marks, peaks, margin and open risk.
+
+## Evidence and validation
+
+```bash
+.venv/bin/qarevin experiment /tmp/qarevin-data/DATASET_ID --config config/research.example.json --family trend --hypothesis 'EMA crossover baseline after declared costs' --state /tmp/qarevin-state
+.venv/bin/qarevin evaluate /tmp/qarevin-state/artifacts/results/ARTIFACT_HASH.json --config config/research.example.json
+.venv/bin/qarevin replay-experiment /tmp/qarevin-state/artifacts/results/ARTIFACT_HASH.json /tmp/qarevin-data/DATASET_ID
+.venv/bin/qarevin walk-forward /tmp/qarevin-data/DATASET_ID --config config/research.example.json --protocol config/walkforward.synthetic.json --output /tmp/qarevin-wf
+.venv/bin/qarevin backup /tmp/qarevin-state/registry.sqlite /tmp/qarevin-backup.sqlite
+```
+
+Experiments preregister hypothesis/strategy/data/config identities and archive source before running.
+Results and failed attempts remain in SQLite's immutable evidence objects and chained audit. Restore
+requires BOTH the SQLite online backup and the artifacts/data stores; source archives record package
+versions, and replay requires restoring the recorded source/environment. Backup is not a full-host
+snapshot. Source/config/data changes cause replay to fail clearly.
+
+Walk-forward selects candidates from validation only and evaluates non-overlapping outer tests.
+Every candidate/fold attempt is counted. Stitched equity rebases **independent fold accounts**; it is
+a diagnostic, not a claim of continuously deployed portfolio risk. `robustness.campaign` holds the
+target fixed and evaluates stressed costs plus two preregistered neighbors. Promotion stays false
+until separate sealed/future evidence exists. No-trade/no-loss/short-window metrics return null
+with reasons; a single backtest can never satisfy walk-forward/robustness gates.
+
+HoldoutService is owner-only and never exposed through agent tools. It requires disjoint owner and
+research roots, freezes code/config/strategy and consumes the campaign before loading data. A crash
+also consumes the opening. ResearchCatalog enforces the date boundary and dataset IDs, not file paths.
+Actual deployment must mount only the research root into API/worker, never the owner holdout root.
+
+Registered walk-forward CLI runs keep a registry beside the output artifacts; pure-library runs
+without a store are unregistered diagnostics and cannot pass robustness eligibility. Every trial
+and campaign is preregistered before computation, including repeated runs of the same protocol.
+Holdout binds dataset/protocol as well as strategy/code/config, and a different campaign name
+cannot reopen a consumed dataset. Holdout starts before 2025 are rejected.
+
+Source archives are published atomically and verified when reused. Source-checkout experiments
+require lockfile/pyproject; archives include `requirements.environment.txt` for all resolved packages.
+Restore that file and the Python minor before replay; extra packages are tolerated, recorded package
+version mismatches are rejected. Replay reports exact hash equality plus abs=1e-8/rel=1e-10 numeric
+reproduction. Audit anchors appear in result artifacts and `.anchor.json` beside database backups;
+keep them with an owner-controlled backup, since a local hash chain alone cannot prevent an
+administrator from rewriting both the database and every local anchor.
+
+The owner-configured WF registry is `--state` (default `~/.local/share/qarevin`), independent of
+output location. Call `robustness.preregister_campaign` first, then `campaign` with the returned
+id; a matching prior registration is mandatory and repeating a target campaign blocks eligibility.
+Owner holdout preregistration requires a passing matching robustness record. Consumption is bound
+to raw-file identity and overlapping UTC ranges, so dataset aliases cannot reopen the same history.
+Identical registered backtests become audited replays of the original artifact.
