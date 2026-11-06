@@ -4,7 +4,7 @@ from pathlib import Path
 from qarevin.backtest import run_backtest
 from qarevin.data import load_dataset, read_manifest
 import pandas as pd
-from qarevin.domain import RESEARCH_BOUNDARY, ResearchConfig, digest, source_identity
+from qarevin.domain import ResearchConfig, digest, source_identity
 from qarevin.evaluation import evaluate, EvaluationProtocol
 from qarevin.evidence import EvidenceStore
 from qarevin.strategies import StrategySpec
@@ -48,7 +48,7 @@ class HoldoutService:
             if directory.is_symlink() or directory.resolve().parent != self.root:
                 raise ValueError('holdout path escape')
             manifest = read_manifest(directory)
-            if pd.Timestamp(manifest['start']) < pd.Timestamp(RESEARCH_BOUNDARY):
+            if pd.Timestamp(manifest['start']) < pd.Timestamp(config.research_access_before):
                 raise PermissionError('holdout overlaps development history')
             with self.store.transaction() as db:
                 if db.execute('SELECT 1 FROM objects WHERE kind=? AND id=?', ('holdout_raw_access', manifest['raw_sha256'])).fetchone():

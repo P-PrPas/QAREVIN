@@ -9,7 +9,7 @@ import pandas as pd
 from pydantic import model_validator
 
 from qarevin.backtest import run_backtest
-from qarevin.domain import RESEARCH_BOUNDARY, Contract, ResearchConfig, digest, source_identity, utc_now
+from qarevin.domain import Contract, ResearchConfig, digest, source_identity, utc_now
 from qarevin.evaluation import evaluate, metrics
 from qarevin.strategies import StrategySpec, signals
 
@@ -62,7 +62,7 @@ def walk_forward(bars: pd.DataFrame, config: ResearchConfig, candidates: list[St
         raise ValueError('require 1..12 candidates and at least one fold')
     if bars.empty:
         return {'status': 'insufficient_evidence', 'reason': 'empty data', 'promotion_ready': False}
-    if bars.index.max() >= pd.Timestamp(RESEARCH_BOUNDARY):
+    if bars.index.max() >= pd.Timestamp(config.research_access_before):
         raise PermissionError('walk-forward cannot access sealed tail')
     for fold in folds:
         windows = ((fold.train_start, fold.validation_start), (fold.validation_start, fold.test_start), (fold.test_start, fold.test_end))
@@ -70,12 +70,13 @@ def walk_forward(bars: pd.DataFrame, config: ResearchConfig, candidates: list[St
             return {'status': 'insufficient_evidence', 'reason': 'empty fold segment', 'promotion_ready': False}
         if pd.Timestamp(fold.train_start) < bars.index.min() or pd.Timestamp(fold.test_end) > bars.index.max() + pd.Timedelta(minutes=1):
             return {'status': 'insufficient_evidence', 'reason': 'fold outside dataset coverage', 'promotion_ready': False}
+    bars_hash = hashlib.sha256(pd.util.hash_pandas_object(bars, index=True).values.tobytes()).hexdigest()
     run_id = uuid.uuid4().hex
     if store:
         protocol_id = store.put('walk_forward_protocol', {'folds': [fold.model_dump() for fold in folds],
                                 'candidates': [item.model_dump() for item in candidates],
                                 'config_hash': digest(config), 'source_hash': source_identity(),
-                                'bars_hash': hashlib.sha256(pd.util.hash_pandas_object(bars, index=True).values.tobytes()).hexdigest()})
+                                'bars_hash': bars_hash})
         store.put('walk_forward_run', {'protocol_id': protocol_id, 'started_at': utc_now()}, identity=run_id)
     prior_end = None
     outputs, attempts = [], []
@@ -128,7 +129,7 @@ def walk_forward(bars: pd.DataFrame, config: ResearchConfig, candidates: list[St
     aggregate = {'initial_equity': config.initial_equity, 'final_equity': config.initial_equity * scale,
                  'equity': stitched, 'trades': trades}
     aggregate['result_hash'] = digest(aggregate)
-    report = {'folds': outputs, 'attempts': attempts, 'split_hash': digest([f.model_dump() for f in folds]),
+    report = {'bars_hash': bars_hash, 'folds': outputs, 'attempts': attempts, 'split_hash': digest([f.model_dump() for f in folds]),
               'stitched_metrics': metrics(aggregate),
               'limitations': ['stitched rebased independent accounts; not a continuous-risk deployment replay'],
               'promotion_ready': False, 'ledger_registered': store is not None}

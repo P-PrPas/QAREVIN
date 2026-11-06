@@ -54,6 +54,9 @@ class DuplicateExperiment(ValueError):
 
 class ResearchService:
     def __init__(self, store: EvidenceStore, catalog: ResearchCatalog, config: ResearchConfig):
+        import pandas as pd
+        if catalog.boundary != pd.Timestamp(config.research_access_before):
+            raise ValueError('catalog and frozen config research boundaries must match')
         self.store, self.catalog, self.config = store, catalog, config
         with store.transaction() as db:
             db.executescript('''

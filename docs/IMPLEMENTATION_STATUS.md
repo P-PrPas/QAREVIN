@@ -9,7 +9,7 @@ credentials have been supplied. Native MQL5 export is not implemented. No profit
 - F3: scoped authenticated API/MCP, durable jobs/budgets/dedup, bounded parameter workers, memory/lineage, isolated profile/Compose and prompts implemented. 20 deterministic worker cycles and MCP handshake tested. Actual Hermes model/injection/budget evaluation and generated-code sandbox remain pending; no scheduled deployment.
 - F4 core: demo-only pinned signal/risk/order controller, persistent reconciliation/limits, fault adapter and HTTPS bridge client contract implemented/tested. Actual broker bridge server/selected-broker acceptance remain pending (F4A); no real forward data (F4B).
 - F5 harness: typed evidence packet/readiness gates, owner-only Ed25519 issue/preview/revoke, scope/expiry and atomic one-use verifier implemented. Live actuator is deliberately absent/disabled; actual evidence and owner capital/policy approval pending.
-- F6: pending.
+- F6 harness: frozen baseline/challenger evidence matching and owner research decisions, sampled forward diagnostics, durable alert leases/retry/ack, and externally hashed research checkpoint/restore implemented/tested. Real sender/cron, broker fill history and continuous forward operation remain pending.
 
 Each phase is an unmerged stacked PR. Review quota: at most two Lab / Claude Opus 5.5 medium rounds
 per PR. Review findings and responses are recorded under docs/reviews/.
@@ -20,3 +20,9 @@ F1 data-readiness gaps: quarantine rejects the complete file with hash/error typ
 emitting per-row repair suggestions. Calendar gaps cannot be classified until the real broker
 calendar is supplied; spike flags are diagnostics (5% bar-close threshold), not market validation.
 Spread stress applies to risk entry limits as well as costs and can change the executed trade set.
+
+Delivery verification: assembled stack passes 116 local tests, Ruff and Compose configuration
+validation. All seven PRs remain open/unmerged and linked to the implementation thread. Each
+received at most two Lab reviewer rounds; F6 final review found no P0–P2, with both P3 responses
+recorded in its ledger. Final post-review alert recurrence fix has local regression coverage;
+it was not sent for a third review. See REVIEW_HANDOFF.md for merge order and external gates.

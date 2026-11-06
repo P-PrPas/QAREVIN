@@ -20,6 +20,9 @@ def main():
     body = json.loads((scratch / 'request.json').read_text())
     config, strategy = ResearchConfig.model_validate(body['config']), StrategySpec.model_validate(body['strategy'])
     bars = load_dataset(Path(body['dataset']))
+    import pandas as pd
+    if bars.index.max() >= pd.Timestamp(config.research_access_before):
+        raise PermissionError('actual bars cross research boundary')
     if len(bars) > 250_000:
         raise ValueError('dataset exceeds bounded-worker row cap')
     if body['kind'] == 'backtest':

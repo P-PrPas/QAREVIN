@@ -197,7 +197,7 @@ def from_environment() -> FastAPI:
     token_path = Path(os.environ['QAREVIN_AGENT_TOKEN_FILE'])
     if token_path.stat().st_mode & 0o077:
         raise ValueError('token file must be owner-only')
+    config = load_config(Path(os.environ['QAREVIN_CONFIG']))
     service = ResearchService(EvidenceStore(state / 'registry.sqlite'),
-                              ResearchCatalog(Path(os.environ['QAREVIN_DATASETS'])),
-                              load_config(Path(os.environ['QAREVIN_CONFIG'])))
+                              ResearchCatalog(Path(os.environ['QAREVIN_DATASETS']), config.research_access_before), config)
     return create_app(service, token_path.read_text().strip())

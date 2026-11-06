@@ -230,3 +230,56 @@ PEM private keys are unencrypted: protect the owner-only directory, preferably o
 owner storage. Key rotation requires an explicit trust-root migration; keygen never overwrites one.
 Reference hashes still need human/trusted-report reconciliation; a valid signature does not verify
 the historical assertions. The live actuator remains absent irrespective of token validity.
+
+## Operations and continuous research (F6)
+
+`ChampionBook` freezes the baseline, records challenger nominations only on matched data/costs/
+source/folds, and requires an owner-reviewed passing fixed-artifact robustness record before
+advancing the research pointer. Old decisions/artifacts remain immutable. It changes no deployment
+or live permissions. Owner CLI walk-forward evidence and bounded job evidence can both be referenced.
+
+`ForwardObserver` records one account/quote snapshot per minute and durable risk/feed conditions.
+Cash flows are reported separately. Sampled snapshots are diagnostics, never closed-trade counts
+or proof of three-month readiness: actual broker fill/deal-history integration is still required.
+`AlertOutbox` persists pending/sent/acknowledged state, leases delivery, retries with backoff and
+re-alerts critical events until owner acknowledgement. Condition recovery/recurrence gets a new
+event generation. Provider delivery is not human acknowledgement, and acknowledgement does not
+resume trading. Delivery is at least once; sender callbacks must have bounded timeouts and use
+stable event IDs for provider deduplication where supported. No real sender/recipient/cron is set up.
+
+```bash
+.venv/bin/python scripts/research_checkpoint.py create --registry /RESEARCH_STATE/registry.sqlite --artifacts /RESEARCH_STATE/artifacts --datasets /RESEARCH_DATA --output /OWNER_BACKUPS/qarevin.zip
+# Refresh the latest known anchor after each research session; keep this outside research state:
+.venv/bin/python -c 'from pathlib import Path; import json; from qarevin.evidence import EvidenceStore; print(json.dumps(EvidenceStore.open_readonly(Path("/RESEARCH_STATE/registry.sqlite")).audit_anchor()))' > /OWNER_BACKUPS/latest-audit-anchor.json
+# Retain the archive SHA256 outside the source machine, then restore into a NEW directory:
+.venv/bin/python scripts/research_checkpoint.py restore /OWNER_BACKUPS/qarevin.zip /NEW_RESEARCH_STATE --expected-sha256 RECORDED_SHA256 --latest-anchor /OWNER_BACKUPS/latest-audit-anchor.json
+```
+
+Research checkpoints include online SQLite backup/audit anchor, source/result artifacts and raw/
+normalized datasets with per-member byte digests. Restore verifies the externally retained archive
+hash, bounded sizes/member paths/digests and audit anchor before publishing the new directory.
+Retain the latest known audit anchor outside research state after new trials, not only at backup time;
+restore requires that prefix and rejects older/divergent histories. An archive cannot detect a
+rollback if the owner also supplies an obsolete anchor. Creation uses a read-only source handle,
+a default 10 GiB streamed size cap and disk-headroom checks.
+Symlinks, duplicate/traversal paths, overwritten destinations and execution/approval/sealed-holdout ledgers are
+rejected. Absolute historic artifact paths are informational; replay resolves content hashes in
+the restored artifact root. Tests restore then replay/re-register against the relocated state.
+
+Execution/approval disaster recovery is deliberately separate: restoring old risk high-water or
+spent-authorization state could loosen safety. Reconstruct broker state and preserve/revoke
+approval history under the owner runbook before any future restart. Demo risk-day rollover now
+cleans known prior-day exposure after a missed cutoff, including restart, before permitting entries.
+
+Future-data research release is owner-configured: `research_access_before` defaults to 2025-01-01 UTC.
+Extending it requires `released_data_record_hash`, a reference to the owner's audited release decision;
+the record must mark reused holdout/forward history as consumed development data and reserve a new
+untouched tail. Config is frozen/read-only to the agent; changing the boundary changes job/config
+identity and does not silently reopen a frozen holdout campaign. Catalog, worker/WF and holdout all
+use that same boundary. The hash is an owner attestation, not an agent approval or proof of provenance.
+
+V1 requires matching session and risk-day timezones so day rollover cannot interrupt the configured session.
+
+A live WAL registry needs a writable directory for SQLite WAL/SHM coordination even when the
+checkpoint handle issues read-only SQL. Read-only mounts without sidecars fail closed; use a
+complete owner working copy or online backup, never immutable mode on a live registry.

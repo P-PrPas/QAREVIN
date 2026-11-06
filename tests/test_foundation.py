@@ -15,6 +15,13 @@ def test_research_has_no_credentials_or_live_toggle(config):
         config.require_demo_ready()
 
 
+def test_session_cannot_cross_a_different_risk_day_timezone(config):
+    payload=config.model_dump()
+    payload['risk']['risk_day_timezone']='America/New_York'
+    with pytest.raises(ValidationError,match='matching session and risk-day'):
+        ResearchConfig.model_validate(payload)
+
+
 def test_policy_is_bounded_finite_and_frozen():
     for value in (0, -1, math.nan, math.inf, 0.01):
         with pytest.raises(ValidationError):
@@ -91,3 +98,14 @@ def test_final_review_edge_cases(config, tmp_path, caplog):
         event(logging.getLogger('test'), 'failed', duration_seconds=float('nan'))
     assert 'NaN' not in caplog.text and 'failed' in caplog.text
     assert len(source_identity()) == 64
+
+
+def test_future_research_release_is_owner_config_only_and_versioned(config):
+    payload=config.model_dump()
+    with pytest.raises(ValidationError,match='release-record'):
+        ResearchConfig.model_validate(payload | {'research_access_before':'2027-01-01T00:00:00Z'})
+    released=ResearchConfig.model_validate(payload | {'research_access_before':'2027-01-01T00:00:00Z',
+                                                      'released_data_record_hash':'a'*64})
+    assert digest(released)!=digest(config)
+    with pytest.raises(ValidationError,match='timezone-aware'):
+        ResearchConfig.model_validate(payload | {'research_access_before':'2027-01-01'})
