@@ -59,3 +59,19 @@ what was investigated; it cannot reset permanent drawdown or loss state. Only af
 problem is fixed should the owner call `start_demo`. At cutoff/halt the watchdog still attempts
 owned exits despite reconciliation errors when the demo account identity is confirmed. Wrong
 account/live identity remains an absolute prohibition on any action.
+
+## Owner approval key rotation / recovery
+
+Signing keys live only in the owner workstation directory; no API/worker/Hermes mount contains them.
+Keygen pins after successful fsync of both files and cleans its own partial files on ordinary failure.
+If a power failure left unreferenced files before a pin, inspect the private state and recover that
+key pair offline or use a fresh empty key directory; never overwrite an initialized trust root.
+
+For a compromised/retired key, first stop all authorization consumers (the current live controller
+is disabled). Preserve the old approval ledger, revocations, consumption history and audit anchor
+as an immutable owner backup. Generate a new key and NEW private approval state, record the
+rotation linking both public fingerprints/anchors, and configure every verifier to the new pin.
+The different key_id invalidates old tokens; never keep an old-key consumer active or silently
+merge/reinitialize its ledger. Obtain fresh scoped authorization. This does not reset demo/live
+risk state or close positions; exposure is reconciled separately. Future live deployment requires
+selected-broker rehearsal before this procedure can authorize any real action.

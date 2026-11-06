@@ -190,3 +190,43 @@ The actual MT5/broker bridge server is not implemented or validated yet: see
 [bridge contract](docs/BRIDGE_CONTRACT.md) and [runbooks](docs/runbooks.md). There is no enabled
 broker runner in Compose and no order tool/API for the agent. F4A broker acceptance and F4B ≥3 real
 calendar months remain external gates. Static margin estimates need broker-specific validation.
+
+## Owner authorization workflow (F5, live disabled)
+
+`CandidateReport` pins all report/evidence hashes, actual scope/account/capital/notional cap,
+research metrics and stressed costs, trial/holdout counts, demo dates/trades/drawdown/risk incidents,
+rollback and uncertainty. Readiness checks require verified non-synthetic evidence, adequate
+research metrics, ≥3 calendar months and ≥100 demo trades. These fields are owner attestations
+assembled from immutable evidence; the schema/signature itself is not proof the assertions are true.
+
+```bash
+# Optional owner workstation preparation, outside repo/research/agent mounts:
+.venv/bin/python scripts/owner_approval.py keygen --directory "$HOME/.config/qarevin-owner/keys" --state "$HOME/.config/qarevin-owner/state"
+# Only a content-addressed candidate packet with all real gates passed can be signed:
+.venv/bin/python scripts/owner_approval.py sign --packet /OWNER_REPORTS/HASH.json --state "$HOME/.config/qarevin-owner/state" --key "$HOME/.config/qarevin-owner/keys/owner.private.pem" --token "$HOME/.config/qarevin-owner/authorization.token"
+.venv/bin/python scripts/owner_approval.py preview --packet /OWNER_REPORTS/HASH.json --state "$HOME/.config/qarevin-owner/state" --key "$HOME/.config/qarevin-owner/keys/owner.public.pem" --token "$HOME/.config/qarevin-owner/authorization.token"
+```
+
+Packet shape is `{"candidate_report": CandidateReport fields}`; use the content-addressed artifact
+writer and assemble it from audited source reports. There is no current live-ready packet, because
+real broker/forward evidence is absent. Private key/token contents are never printed. Signing keys
+are owner-only outside the repo; deployment verification needs only the public key. Ed25519 claims
+bind strategy/risk/evidence/broker/account/capital/currency/notional/environment, expire in at most
+one hour (default ten minutes), can be revoked, and consume atomically once. Expiry is rechecked
+under the consumption lock. Revoke does not close positions.
+
+`DisabledLiveController.prepare` previews without consuming authorization, and `activate` always
+refuses: no live actuator is shipped. All approvals in tests are fixtures. No real keys are generated
+or tokens issued by automated setup. This completes an offline authorization harness, not live
+readiness or permission to deploy real money.
+
+The owner public-key fingerprint is pinned in private approval state at keygen, required by the
+verifier and embedded in claims. Replacing the public-key file cannot change the trust root.
+Claims include literal purpose/version and are signed with a dedicated live-authorization context.
+The packet requires a preregistered search budget/protocol hash, trial count within that budget,
+one holdout opening and ≥1.5x/2x spread/slippage stress coverage. Preview displays the trial count.
+Owner paths reject configured research/data/Hermes mounts, symlinks and untrusted writable parents.
+PEM private keys are unencrypted: protect the owner-only directory, preferably on offline/removable
+owner storage. Key rotation requires an explicit trust-root migration; keygen never overwrites one.
+Reference hashes still need human/trusted-report reconciliation; a valid signature does not verify
+the historical assertions. The live actuator remains absent irrespective of token validity.
