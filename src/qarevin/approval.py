@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import base64
 import calendar
+import hashlib
 import re
 import uuid
 from datetime import datetime, timezone
 from typing import Literal
 
 from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 from pydantic import Field, model_validator
 
@@ -16,6 +18,11 @@ from qarevin.domain import Contract, canonical_json, digest, unique_json
 from qarevin.evidence import EvidenceStore
 
 HASH=r'^[a-f0-9]{64}$'
+SIGNING_CONTEXT=b'qarevin-live-authorization-v1\x00'
+
+
+def public_key_id(key: Ed25519PublicKey) -> str:
+    return hashlib.sha256(key.public_bytes(serialization.Encoding.Raw,serialization.PublicFormat.Raw)).hexdigest()
 
 
 def three_months_after(value: datetime) -> datetime:
@@ -78,6 +85,8 @@ class CandidateReport(Contract):
     rollback_runbook_hash: str = Field(pattern=HASH)
     research_metrics: ResearchMetrics
     stressed_costs: tuple[CostScenario, ...] = Field(min_length=2,max_length=5)
+    search_protocol_hash: str = Field(pattern=HASH)
+    preregistered_trial_budget: int = Field(ge=1,le=10000)
     trial_count: int = Field(ge=1)
     holdout_open_count: int = Field(ge=1)
     demo_started_at: datetime
@@ -106,7 +115,10 @@ class CandidateReport(Contract):
         if now.tzinfo is None:
             raise ValueError('aware owner clock required')
         metrics=self.research_metrics
-        conditions={'research_net':metrics.net_pnl>0 and metrics.net_return>0,
+        conditions={'single_holdout_opening':self.holdout_open_count==1,
+                    'within_preregistered_budget':self.trial_count<=self.preregistered_trial_budget,
+                    'stress_levels':all(any(item.spread_multiplier>=level and item.slippage_multiplier>=level for item in self.stressed_costs) for level in (1.5,2.0)),
+                    'research_net':metrics.net_pnl>0 and metrics.net_return>0,
                     'research_drawdown':metrics.max_drawdown<=.15,
                     'research_profit_factor':metrics.profit_factor is not None and metrics.profit_factor>1.2,
                     'research_calmar':metrics.calmar is not None and metrics.calmar>.5 and metrics.calendar_days>=365,
@@ -129,6 +141,9 @@ class CandidateReport(Contract):
 
 
 class Claims(DeploymentScope):
+    purpose: Literal['qarevin_live_authorization'] = 'qarevin_live_authorization'
+    version: Literal[1] = 1
+    key_id: str = Field(pattern=HASH)
     authorization_id: str = Field(pattern=r'^[a-f0-9]{32}$')
     issued_at: int = Field(ge=0)
     expires_at: int = Field(ge=0)
@@ -154,15 +169,21 @@ def issue(report: CandidateReport,key: Ed25519PrivateKey,now: datetime,*,ttl_sec
     """Called only by an authenticated owner process with private signing-key access."""
     if report.missing(now):
         raise PermissionError('candidate evidence is not live-ready')
-    claims=Claims(**report.scope().model_dump(),authorization_id=uuid.uuid4().hex,
+    claims=Claims(**report.scope().model_dump(),key_id=public_key_id(key.public_key()),authorization_id=uuid.uuid4().hex,
                   issued_at=int(now.timestamp()),expires_at=int(now.timestamp())+ttl_seconds)
     payload=canonical_json(claims).encode()
-    return _encode(payload)+'.'+_encode(key.sign(payload))
+    return _encode(payload)+'.'+_encode(key.sign(SIGNING_CONTEXT+payload))
 
 
 class ApprovalVerifier:
-    def __init__(self,public_key: Ed25519PublicKey,owner_state: EvidenceStore,*,clock=None):
+    def __init__(self,public_key: Ed25519PublicKey,owner_state: EvidenceStore,*,expected_fingerprint: str,clock=None):
+        if public_key_id(public_key)!=expected_fingerprint:
+            raise PermissionError('owner public-key fingerprint mismatch')
+        root=owner_state.get('approval_trust_root','owner')
+        if root['key_id']!=expected_fingerprint:
+            raise PermissionError('approval state trust root mismatch')
         self.key,self.store=public_key,owner_state
+        self.key_id=expected_fingerprint
         self.clock=clock or (lambda: datetime.now(timezone.utc))
         with owner_state.read() as db:
             if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name IN ('jobs','execution_state')").fetchone():
@@ -174,14 +195,16 @@ class ApprovalVerifier:
         encoded,signature=token.split('.')
         try:
             payload=_decode(encoded)
-            self.key.verify(_decode(signature),payload)
+            self.key.verify(_decode(signature),SIGNING_CONTEXT+payload)
             claims=Claims.model_validate(unique_json(payload.decode()))
         except (ValueError,InvalidSignature,UnicodeError,RecursionError) as exc:
             raise PermissionError('invalid signed authorization') from exc
+        if claims.key_id!=self.key_id:
+            raise PermissionError('authorization signer key mismatch')
         current=int(now.timestamp())
         if not claims.issued_at<=current<claims.expires_at:
             raise PermissionError('authorization expired or issued in the future')
-        scope={key:value for key,value in claims.model_dump().items() if key not in ('authorization_id','issued_at','expires_at')}
+        scope={key:value for key,value in claims.model_dump().items() if key not in ('authorization_id','issued_at','expires_at','purpose','version','key_id')}
         if scope!=expected.model_dump():
             raise PermissionError('authorization scope mismatch')
         with self.store.read() as db:
@@ -192,6 +215,9 @@ class ApprovalVerifier:
     def consume(self,token: str,expected: DeploymentScope,now: datetime) -> Claims:
         claims=self.verify(token,expected,now)
         with self.store.transaction() as db:
+            root=db.execute("SELECT body FROM objects WHERE kind='approval_trust_root' AND id='owner'").fetchone()
+            if root is None or unique_json(root[0])['key_id']!=self.key_id:
+                raise PermissionError('approval trust root changed')
             current=max(int(now.timestamp()),int(self.clock().timestamp()))
             if not claims.issued_at<=current<claims.expires_at:
                 raise PermissionError('authorization expired while acquiring deployment lock')
@@ -217,7 +243,7 @@ class DisabledLiveController:
             raise PermissionError('live evidence gates incomplete')
         claims=self.verifier.verify(token,report.scope(),now)
         return {'status':'authorization_valid_live_disabled','authorization_id':claims.authorization_id,
-                'evidence_hash':digest(report),'activation_performed':False,'authorization_consumed':False}
+                'evidence_hash':digest(report),'trial_count':report.trial_count,'preregistered_trial_budget':report.preregistered_trial_budget,'activation_performed':False,'authorization_consumed':False}
 
     def activate(self,*args,**kwargs):
         raise PermissionError('live connector is not implemented or enabled')

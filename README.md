@@ -201,7 +201,7 @@ assembled from immutable evidence; the schema/signature itself is not proof the 
 
 ```bash
 # Optional owner workstation preparation, outside repo/research/agent mounts:
-.venv/bin/python scripts/owner_approval.py keygen --directory "$HOME/.config/qarevin-owner/keys"
+.venv/bin/python scripts/owner_approval.py keygen --directory "$HOME/.config/qarevin-owner/keys" --state "$HOME/.config/qarevin-owner/state"
 # Only a content-addressed candidate packet with all real gates passed can be signed:
 .venv/bin/python scripts/owner_approval.py sign --packet /OWNER_REPORTS/HASH.json --state "$HOME/.config/qarevin-owner/state" --key "$HOME/.config/qarevin-owner/keys/owner.private.pem" --token "$HOME/.config/qarevin-owner/authorization.token"
 .venv/bin/python scripts/owner_approval.py preview --packet /OWNER_REPORTS/HASH.json --state "$HOME/.config/qarevin-owner/state" --key "$HOME/.config/qarevin-owner/keys/owner.public.pem" --token "$HOME/.config/qarevin-owner/authorization.token"
@@ -219,3 +219,14 @@ under the consumption lock. Revoke does not close positions.
 refuses: no live actuator is shipped. All approvals in tests are fixtures. No real keys are generated
 or tokens issued by automated setup. This completes an offline authorization harness, not live
 readiness or permission to deploy real money.
+
+The owner public-key fingerprint is pinned in private approval state at keygen, required by the
+verifier and embedded in claims. Replacing the public-key file cannot change the trust root.
+Claims include literal purpose/version and are signed with a dedicated live-authorization context.
+The packet requires a preregistered search budget/protocol hash, trial count within that budget,
+one holdout opening and ≥1.5x/2x spread/slippage stress coverage. Preview displays the trial count.
+Owner paths reject configured research/data/Hermes mounts, symlinks and untrusted writable parents.
+PEM private keys are unencrypted: protect the owner-only directory, preferably on offline/removable
+owner storage. Key rotation requires an explicit trust-root migration; keygen never overwrites one.
+Reference hashes still need human/trusted-report reconciliation; a valid signature does not verify
+the historical assertions. The live actuator remains absent irrespective of token validity.
