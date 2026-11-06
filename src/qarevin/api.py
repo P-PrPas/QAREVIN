@@ -64,9 +64,7 @@ def create_app(service: ResearchService, token: str) -> FastAPI:
     async def bad_schema(request, exc):
         return JSONResponse({'error': 'invalid_arguments'}, status_code=422)
 
-    @app.exception_handler(ValueError)
-    async def invalid(request, exc):
-        status = 429 if isinstance(exc, BudgetExceeded) else 409 if isinstance(exc, DuplicateExperiment) else 400
+    def audit_denial(request, exc):
         path = getattr(request.scope.get('route'), 'path', request.url.path)
         key = (path, type(exc).__name__)
         import time
@@ -76,6 +74,11 @@ def create_app(service: ResearchService, token: str) -> FastAPI:
             if len(denied_counts) >= 128:
                 denied_counts.clear()
             denied_counts[key] = now
+
+    @app.exception_handler(ValueError)
+    async def invalid(request, exc):
+        status = 429 if isinstance(exc, BudgetExceeded) else 409 if isinstance(exc, DuplicateExperiment) else 400
+        audit_denial(request, exc)
         return JSONResponse({'error': type(exc).__name__}, status_code=status)
 
     @app.exception_handler(KeyError)
@@ -84,6 +87,7 @@ def create_app(service: ResearchService, token: str) -> FastAPI:
 
     @app.exception_handler(PermissionError)
     async def denied(request, exc):
+        audit_denial(request, exc)
         return JSONResponse({'error': 'forbidden'}, status_code=403)
 
     @app.get('/api/v1/datasets')

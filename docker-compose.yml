@@ -52,7 +52,7 @@ services:
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     volumes:
-      - ${QAREVIN_HERMES_HOME:-./state/hermes-profile}:/opt/data
+      - ${QAREVIN_HERMES_HOME:?set QAREVIN_HERMES_HOME outside research state}:/opt/data
       - ./src/qarevin_tools:/opt/qarevin/qarevin_tools:ro
     tmpfs: [/tmp:size=64m, /run:size=32m]
     secrets: [qarevin_agent_token]

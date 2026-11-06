@@ -123,6 +123,7 @@ Identical registered backtests become audited replays of the original artifact.
 # Import ONLY accessible research data into ./data, then check memory before starting:
 .venv/bin/qarevin preflight --job-memory-mib 1024
 # Optional, when headroom permits:
+export QAREVIN_HERMES_HOME="$HOME/.hermes-qarevin"  # outside shared research state
 docker compose up -d --build qarevin-api qarevin-worker
 ```
 
@@ -160,3 +161,9 @@ stdio handshake checks. Compose now bypasses root init and runs UID1000 with zer
 This validates loading tools, not model behavior/gateway delivery. Export
 `QAREVIN_HERMES_HOME="$HOME/.hermes-qarevin"` when enabling the optional agent profile. Built-in
 Hermes memory is disabled; interpretations use evidence-linked Qarevin memory instead.
+
+`QAREVIN_HERMES_HOME` is required by Compose and must be outside `QAREVIN_STATE_DIR`; this keeps
+model/Telegram credentials out of API/worker mounts. The API's owner-access bridge permits outbound
+networking for published-port compatibility; the worker remains without network and neither API nor
+worker receives model/broker secrets. Actual API network policy should be restricted on deployment.
+Permission denials, including sealed-data access, are audit-recorded with per-route coalescing.

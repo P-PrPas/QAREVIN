@@ -185,3 +185,14 @@ def test_one_linked_infrastructure_retry_is_bounded_and_audited(service):
     service.finish(second['id'],'failure-driver',error_type='TimeoutExpired')
     with pytest.raises(ValueError,match='only one'):
         service.enqueue(original.model_copy(update={'retry_of':second['id']}),'third-attempt-no')
+
+
+def test_permission_denials_are_audited_and_coalesced(service,monkeypatch):
+    def denied():
+        raise PermissionError('sealed')
+    monkeypatch.setattr(service.catalog,'list',denied)
+    client=TestClient(create_app(service,'a'*40),headers={'Authorization':'Bearer '+'a'*40})
+    assert client.get('/api/v1/datasets').status_code==403
+    assert client.get('/api/v1/datasets').status_code==403
+    with service.store.read() as db:
+        assert db.execute("SELECT COUNT(*) FROM audit_ledger WHERE event='request_denied'").fetchone()[0]==1
