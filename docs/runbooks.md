@@ -85,9 +85,11 @@ retries can duplicate delivery. Critical events repeat every 15 minutes until au
 acknowledgement. An acknowledgement is not a risk resume command. No sender is configured by default.
 
 For research recovery, retain create_checkpoint's archive SHA and audit anchor in an owner-controlled
-backup location. Restore only to a new directory with that external SHA, then replay archived
-source/environment and verify datasets before resuming jobs. Checkpoints cannot clone execution or
-approval state; their rollback could forget drawdown or consumed tokens. Treat those domains with
+backup location. Also advance a separately retained latest-known audit anchor after every new
+trial; a stale anchor cannot detect a rollback of later trials. Restore only to a new directory
+with the external SHA and latest anchor, then replay archived source/environment and verify
+datasets before resuming jobs. Checkpoints cannot clone execution, approval or sealed-holdout
+state; their rollback could forget drawdown, consumed tokens or holdout openings. Treat those domains with
 separate owner-controlled backups and broker reconciliation/key-rotation procedures.
 
 If the runner was down across cutoff, risk-day rollover records overnight_cleanup_required and
@@ -99,3 +101,10 @@ marker or any intent exists. Pause and recover the true broker/high-water histor
 procedures; start_demo cannot reset the basis. Execution state also rejects pre-agent research
 registries, not only databases with a jobs table. Checkpoint scope checks reject deployment markers
 and intent tables even if a damaged risk-state table is missing.
+
+SQLite coordination requires a writable registry directory for a live WAL database, including with
+read-only SQL handles: missing WAL/SHM sidecars may need creation. This tool fails closed on a
+read-only snapshot/mount without those sidecars. Supply a writable owner working copy with the
+complete DB/WAL state or an online backup. Never mark a live registry immutable to bypass this.
+The alert-persistence integrity fallback coalesces within a minute and can recur in later minutes
+after acknowledgement; inspect returned alert_errors even if storage cannot persist the fallback.

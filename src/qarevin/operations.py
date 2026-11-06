@@ -140,7 +140,7 @@ class ForwardObserver:
             except Exception as exc:
                 alert_errors.append(type(exc).__name__)
                 try:
-                    self.outbox.enqueue(deployment+':alert-persistence-failure',Alert(kind='integrity_failure',critical=True,
+                    self.outbox.enqueue(deployment+':alert-persistence-failure:'+str(int(epoch(now)//60)),Alert(kind='integrity_failure',critical=True,
                         message='Operational alert persistence failed; owner must inspect storage and queue capacity'),now)
                 except Exception as fallback:
                     alert_errors.append(type(fallback).__name__)

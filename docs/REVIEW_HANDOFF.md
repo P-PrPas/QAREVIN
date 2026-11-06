@@ -52,6 +52,6 @@ Findings/responses and the two-round limit per PR are recorded under `docs/revie
    approval. Live activation is deliberately disabled and no live actuator is implemented.
 6. Native MQL5 EA export is not implemented; it needs its own specification and parity validation.
 
-See `DEVELOPMENT_PLAN.md`, `IMPLEMENTATION_STATUS.md`, README and `docs/runbooks/` (where present)
+See `DEVELOPMENT_PLAN.md`, `IMPLEMENTATION_STATUS.md`, README and `docs/runbooks.md`
 for configuration, operating procedures and the distinction between harnesses and evidence gates.
 No defensible percentage of trading readiness can be derived from code/tests alone.

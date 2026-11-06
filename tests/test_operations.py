@@ -77,6 +77,11 @@ def test_alert_failure_does_not_skip_forward_snapshot(tmp_path,config,monkeypatc
         assert result['snapshot'] and result['alert_errors']
         assert runner.store.get('forward_snapshot',result['snapshot'])
         assert any('integrity_failure' in item['body'] for item in outbox.pending())
+        first=outbox.pending()[0]['id']
+        outbox.acknowledge(first,'owner')
+        observer=ForwardObserver(runner,outbox)
+        assert observer.tick(NOW+timedelta(minutes=1))['alert_errors']
+        assert any(row['id']!=first and 'integrity_failure' in row['body'] for row in outbox.pending())
 
 
 def test_ack_during_delivery_is_not_overwritten(tmp_path):

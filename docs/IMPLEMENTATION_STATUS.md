@@ -20,3 +20,9 @@ F1 data-readiness gaps: quarantine rejects the complete file with hash/error typ
 emitting per-row repair suggestions. Calendar gaps cannot be classified until the real broker
 calendar is supplied; spike flags are diagnostics (5% bar-close threshold), not market validation.
 Spread stress applies to risk entry limits as well as costs and can change the executed trade set.
+
+Delivery verification: assembled stack passes 116 local tests, Ruff and Compose configuration
+validation. All seven PRs remain open/unmerged and linked to the implementation thread. Each
+received at most two Lab reviewer rounds; F6 final review found no P0–P2, with both P3 responses
+recorded in its ledger. Final post-review alert recurrence fix has local regression coverage;
+it was not sent for a third review. See REVIEW_HANDOFF.md for merge order and external gates.

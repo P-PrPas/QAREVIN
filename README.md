@@ -249,7 +249,9 @@ stable event IDs for provider deduplication where supported. No real sender/reci
 
 ```bash
 .venv/bin/python scripts/research_checkpoint.py create --registry /RESEARCH_STATE/registry.sqlite --artifacts /RESEARCH_STATE/artifacts --datasets /RESEARCH_DATA --output /OWNER_BACKUPS/qarevin.zip
-# Retain the returned SHA256 outside the source machine, then restore into a NEW directory:
+# Refresh the latest known anchor after each research session; keep this outside research state:
+.venv/bin/python -c 'from pathlib import Path; import json; from qarevin.evidence import EvidenceStore; print(json.dumps(EvidenceStore.open_readonly(Path("/RESEARCH_STATE/registry.sqlite")).audit_anchor()))' > /OWNER_BACKUPS/latest-audit-anchor.json
+# Retain the archive SHA256 outside the source machine, then restore into a NEW directory:
 .venv/bin/python scripts/research_checkpoint.py restore /OWNER_BACKUPS/qarevin.zip /NEW_RESEARCH_STATE --expected-sha256 RECORDED_SHA256 --latest-anchor /OWNER_BACKUPS/latest-audit-anchor.json
 ```
 
@@ -277,3 +279,7 @@ identity and does not silently reopen a frozen holdout campaign. Catalog, worker
 use that same boundary. The hash is an owner attestation, not an agent approval or proof of provenance.
 
 V1 requires matching session and risk-day timezones so day rollover cannot interrupt the configured session.
+
+A live WAL registry needs a writable directory for SQLite WAL/SHM coordination even when the
+checkpoint handle issues read-only SQL. Read-only mounts without sidecars fail closed; use a
+complete owner working copy or online backup, never immutable mode on a live registry.
