@@ -273,3 +273,34 @@ def test_paused_strategy_can_still_exit_known_position(tmp_path,ready_config,mon
         monkeypatch.setattr(module,'signals',lambda bars,spec:pd.DataFrame({'side':[0],'stop_distance':[1.]},index=pd.DatetimeIndex([NOW])))
         assert runtime.tick(make_bars(60,'2026-11-05 11:00:00'),NOW)['status']=='paused'
         assert broker.get_positions()==[]
+
+
+def test_each_critical_reason_requires_its_own_acknowledgement(tmp_path,ready_config):
+    runner,broker=create(tmp_path,ready_config)
+    with runner:
+        runner.start_demo(NOW)
+        broker.fault='missing_stop'
+        with pytest.raises(SafetyStop):
+            runner.submit(signal(),NOW)
+        broker.positions['manual']=Position(position_id='manual',client_order_id='unowned',symbol=ready_config.instrument.symbol,
+                                           side=1,lots=.01,entry_price=1500.,stop_loss=1499.)
+        with pytest.raises(SafetyStop):
+            runner.pause(flatten=True)
+        assert set(runner.state()['pending_ack_reasons'])=={'protection_failure','flatten_uncertainty'}
+        runner.acknowledge_halt('flatten_uncertainty','e'*64,'Owner inspected the unowned exposure issue',NOW)
+        with pytest.raises(SafetyStop,match='acknowledgement'):
+            runner.start_demo(NOW)
+        runner.acknowledge_halt('protection_failure','d'*64,'Owner fixed native broker stop attachment',NOW)
+        assert not runner.state()['requires_ack']
+
+
+def test_new_loss_breach_flattens_during_static_reconciliation_failure(tmp_path,ready_config):
+    runner,broker=create(tmp_path,ready_config)
+    with runner:
+        runner.start_demo(NOW)
+        runner.submit(signal(),NOW)
+        broker.spec=broker.spec.model_copy(update={'tick_size':.02})
+        broker.account=broker.account.model_copy(update={'equity':989.})
+        with pytest.raises(SafetyStop):
+            runner.watchdog(NOW)
+        assert broker.get_positions()==[] and runner.state()['daily_halted']

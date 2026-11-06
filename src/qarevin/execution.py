@@ -112,7 +112,7 @@ class DemoRunner:
         if state is None:
             state={'day':day,'day_start':account.equity,'high_water':account.equity,
                    'cash_flow':account.cumulative_cash_flow,'daily_halted':False,'permanent_halted':False,
-                   'requires_ack':False,'ack_reason':None,'paused':True,'mode':'reconciling','reason':'owner_activation_required','last_observed':now.isoformat()}
+                   'pending_ack_reasons':[],'requires_ack':False,'ack_reason':None,'paused':True,'mode':'reconciling','reason':'owner_activation_required','last_observed':now.isoformat()}
         if now < datetime.fromisoformat(state['last_observed']):
             raise SafetyStop('clock moved backwards')
         state['last_observed']=now.isoformat()
@@ -193,20 +193,20 @@ class DemoRunner:
                 if position.side!=intent.side or position.lots>intent.lots+1e-9:
                     raise SafetyStop('position side/volume mismatch')
                 if position.stop_loss is None:
-                    state.update(paused=True,reason='protection_failure',requires_ack=True,ack_reason='protection_failure')
+                    self._critical_state(state,'protection_failure')
                     self.save_state(state)
                     self.broker.close_position(position.position_id)
                     self.store.audit('protection_failure_flatten',{'position_id':position.position_id})
                     raise SafetyStop('missing broker protection; flatten requested')
                 if (position.side==1 and position.stop_loss<intent.stop_loss-1e-9) or (position.side==-1 and position.stop_loss>intent.stop_loss+1e-9):
-                    state.update(paused=True,reason='widened_stop',requires_ack=True,ack_reason='widened_stop')
+                    self._critical_state(state,'widened_stop')
                     self.save_state(state)
                     self.broker.close_position(position.position_id)
                     raise SafetyStop('broker stop wider than pinned intent; flatten requested')
                 open_risk+=max(0,position.side*(position.entry_price-position.stop_loss))*position.lots*self.config.instrument.tick_value/self.config.instrument.tick_size
                 open_risk+=2*position.lots*self.config.costs.commission_per_lot_side
             if open_risk>account.equity*self.config.risk.per_trade+1e-7:
-                state.update(paused=True,reason='excess_open_risk',requires_ack=True,ack_reason='excess_open_risk')
+                self._critical_state(state,'excess_open_risk')
                 self.save_state(state)
                 self.flatten_known_positions()
                 raise SafetyStop('actual open risk exceeds policy')
@@ -303,7 +303,8 @@ class DemoRunner:
         except Exception as exc:
             state=self.state()
             if state:
-                state.update(paused=True,mode='reconciling',reason='flatten_uncertainty',requires_ack=True,ack_reason='flatten_uncertainty')
+                self._critical_state(state,'flatten_uncertainty')
+                state['mode']='reconciling'
                 self.save_state(state)
             self.store.audit('flatten_failed',{'error_type':type(exc).__name__})
             raise SafetyStop('flatten not confirmed; owner resolution required') from exc
@@ -334,16 +335,25 @@ class DemoRunner:
         if unknown or remaining_positions or remaining_orders:
             raise SafetyStop('unowned exposure requires owner resolution')
 
+    def _critical_state(self,state,reason):
+        pending=set(state.get('pending_ack_reasons',[]))
+        if state.get('requires_ack') and state.get('ack_reason'):
+            pending.add(state['ack_reason'])
+        pending.add(reason)
+        state.update(paused=True,requires_ack=True,reason=reason,pending_ack_reasons=sorted(pending),
+                     ack_reason=state.get('ack_reason') or reason)
+
     @serialized
     def acknowledge_halt(self,reason: str,evidence_hash: str,note: str,now: datetime):
         state=self.state()
-        if not state or not state.get('requires_ack') or state.get('ack_reason')!=reason:
+        if not state or not state.get('requires_ack') or reason not in set(state.get('pending_ack_reasons',[]) or [state.get('ack_reason')]):
             raise SafetyStop('no matching halt to acknowledge')
         if not re.fullmatch(r'[a-f0-9]{64}',evidence_hash) or not 10<=len(note)<=1000 or now.tzinfo is None:
             raise ValueError('owner evidence hash, note and aware clock required')
         self._account_identity()
         self.store.put('owner_halt_acknowledgement',{'reason':reason,'evidence_hash':evidence_hash,'note':note,'at':now.isoformat()})
-        state.update(requires_ack=False,ack_reason=None,paused=True,reason='owner_acknowledged')
+        pending=set(state.get('pending_ack_reasons',[]) or [state.get('ack_reason')])-{reason}
+        state.update(requires_ack=bool(pending),pending_ack_reasons=sorted(pending),ack_reason=sorted(pending)[0] if pending else None,paused=True,reason='owner_acknowledged')
         self.save_state(state)
 
     @serialized
@@ -377,6 +387,14 @@ class DemoRunner:
             state=self.reconcile(now)
         except SafetyStop:
             prior=self.state() or {}
+            try:
+                account=self._account_identity(for_exit=True)
+                if prior:
+                    prior['daily_halted'] |= account.equity<=prior['day_start']*(1-self.config.risk.daily_loss)
+                    prior['permanent_halted'] |= account.equity<=prior['high_water']*(1-self.config.risk.max_drawdown)
+                    self.save_state(prior)
+            except Exception:
+                raise SafetyStop('cannot confirm demo account for emergency risk reduction') from None
             if cutoff or prior.get('daily_halted') or prior.get('permanent_halted'):
                 # Identity is rechecked inside flatten; a static contract failure must not bypass exits.
                 self.store.audit('safety_exit_after_reconcile_failure',{'cutoff':cutoff})

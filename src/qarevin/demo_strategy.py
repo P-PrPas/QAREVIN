@@ -44,7 +44,9 @@ class DemoStrategy:
             return {'status':'already_seen','signal_id':identifier}
         except KeyError:
             pass
-        positions=self.runner.broker.get_positions()
+        with self.runner.store.read() as db:
+            owned={row[0] for row in db.execute('SELECT id FROM intents')}
+        positions=[p for p in self.runner.broker.get_positions() if p.client_order_id in owned]
         direction=int(decision.side)
         if positions and (direction==0 or direction!=positions[0].side):
             self.runner.flatten_known_positions()
