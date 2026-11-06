@@ -211,3 +211,65 @@ def test_uncertain_flatten_stays_paused_and_clock_cannot_reset_loss_day(tmp_path
         assert runner.state()['paused'] and broker.get_positions()
         with pytest.raises(SafetyStop):
             runner.reconcile(NOW-timedelta(days=1))
+
+
+def test_cutoff_closes_known_positions_even_when_static_contract_check_fails(tmp_path,ready_config):
+    runner,broker=create(tmp_path,ready_config)
+    with runner:
+        runner.start_demo(NOW)
+        runner.submit(signal(),NOW)
+        broker.spec=broker.spec.model_copy(update={'tick_size':.02})
+        with pytest.raises(SafetyStop):
+            runner.watchdog(NOW.replace(hour=21))
+        assert broker.get_positions()==[]
+        assert runner.state()['mode']=='reconciling'
+
+
+def test_dynamic_margin_does_not_change_contract_identity_but_caps_new_orders(tmp_path,ready_config):
+    runner,broker=create(tmp_path,ready_config)
+    with runner:
+        runner.start_demo(NOW)
+        broker.spec=broker.spec.model_copy(update={'margin_per_lot':40000.,'verified':False})
+        assert runner.reconcile(NOW)['mode']=='active'
+        with pytest.raises(SafetyStop,match='actual broker margin'):
+            runner.submit(signal(),NOW)
+        assert broker.submissions==0
+
+
+def test_owner_resolution_and_critical_ack_are_explicit(tmp_path,ready_config):
+    runner,broker=create(tmp_path,ready_config)
+    with runner:
+        runner.start_demo(NOW)
+        broker.fault='unknown_before'
+        with pytest.raises(SafetyStop):
+            runner.submit(signal(),NOW)
+        runner.resolve_intent(signal().signal_id,'f'*64,'Owner checked complete broker order and deal history',NOW)
+        broker.fault='missing_stop'
+        runner.start_demo(NOW)
+        with pytest.raises(SafetyStop):
+            runner.submit(signal(2),NOW)
+        with pytest.raises(SafetyStop,match='acknowledgement'):
+            runner.start_demo(NOW)
+        runner.acknowledge_halt('protection_failure','e'*64,'Owner verified native stop support and fixed bridge behavior',NOW)
+        broker.fault=None
+        assert runner.start_demo(NOW)['mode']=='active'
+
+
+def test_paused_strategy_can_still_exit_known_position(tmp_path,ready_config,monkeypatch):
+    import pandas as pd
+    import qarevin.demo_strategy as module
+    from qarevin.domain import source_identity
+    from qarevin.strategies import StrategySpec
+    from test_data import make_bars
+    spec=StrategySpec(family='no_trade')
+    identity=digest({'strategy':spec.model_dump(),'source_hash':source_identity(),'config_hash':digest(ready_config)})
+    broker=FakeBroker(ready_config.instrument,now=NOW)
+    with DemoRunner(tmp_path/'paused.sqlite',broker,ready_config,strategy_hash=identity,
+                    account_alias='synthetic-demo',server='fake') as runner:
+        runtime=module.DemoStrategy(runner,spec)
+        runner.start_demo(NOW)
+        runner.submit(signal(),NOW)
+        runner.pause()
+        monkeypatch.setattr(module,'signals',lambda bars,spec:pd.DataFrame({'side':[0],'stop_distance':[1.]},index=pd.DatetimeIndex([NOW])))
+        assert runtime.tick(make_bars(60,'2026-11-05 11:00:00'),NOW)['status']=='paused'
+        assert broker.get_positions()==[]

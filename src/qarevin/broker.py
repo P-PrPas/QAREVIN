@@ -14,7 +14,7 @@ class Account(Contract):
     alias: str = Field(min_length=1)
     server: str = Field(min_length=1)
     currency: str = Field(pattern=r'^[A-Z]{3}$')
-    equity: float = Field(gt=0)
+    equity: float
     balance: float
     margin: float = Field(ge=0)
     free_margin: float
@@ -62,6 +62,7 @@ class Order(Contract):
 
 class OrderResult(Contract):
     client_order_id: str
+    symbol: str | None = None
     state: Literal['accepted','partial','filled','rejected','cancelled','unknown']
     filled_lots: float = Field(default=0,ge=0)
     broker_order_id: str | None = None
@@ -85,6 +86,7 @@ class BrokerAdapter(Protocol):
     def get_positions(self) -> list[Position]: ...
     def get_open_orders(self) -> list[OrderResult]: ...
     def find_order(self, client_order_id: str) -> OrderResult | None: ...
+    def calculate_margin(self, order: Order) -> float: ...
     def place_order(self, order: Order) -> OrderResult: ...
     def cancel_order(self, client_order_id: str) -> OrderResult: ...
     def close_position(self, position_id: str) -> None: ...
@@ -132,10 +134,13 @@ class FakeBroker:
         self.get_account()
         return self.orders.get(identifier)
 
+    def calculate_margin(self,order):
+        return order.lots*self.spec.margin_per_lot
+
     def place_order(self,order):
         self.submissions+=1
         if self.fault=='reject':
-            result=OrderResult(client_order_id=order.client_order_id,state='rejected')
+            result=OrderResult(client_order_id=order.client_order_id,symbol=order.symbol,state='rejected')
         elif self.fault=='unknown_before':
             raise TimeoutError('fake transport timeout before acceptance')
         else:
@@ -145,7 +150,7 @@ class FakeBroker:
                               symbol=order.symbol,side=order.side,lots=lots,entry_price=order.reference_price,
                               stop_loss=None if self.fault=='missing_stop' else order.stop_loss)
             self.positions[position_id]=position
-            result=OrderResult(client_order_id=order.client_order_id,state='partial' if self.fault=='partial' else 'filled',
+            result=OrderResult(client_order_id=order.client_order_id,symbol=order.symbol,state='partial' if self.fault=='partial' else 'filled',
                                filled_lots=lots,broker_order_id='order-'+order.client_order_id,position_id=position_id)
         self.orders[order.client_order_id]=result
         if self.fault=='timeout_after_fill':

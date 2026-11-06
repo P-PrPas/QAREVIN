@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import fcntl
 import json
+import math
+import re
 import threading
 from functools import wraps
 from datetime import datetime
@@ -83,16 +85,22 @@ class DemoRunner:
         db.execute('INSERT INTO execution_state VALUES(1,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body',
                    (canonical_json(state),))
 
-    def _account(self):
-        if self.store.get('deployment_identity','pinned')['engine_source_hash'] != source_identity():
+    def _account_identity(self,*,for_exit=False):
+        if not for_exit and self.store.get('deployment_identity','pinned')['engine_source_hash'] != source_identity():
             raise SafetyStop('pinned execution source changed')
         account=self.broker.get_account()
         if account.environment!='demo' or account.alias!=self.account_alias or account.server!=self.server:
             raise SafetyStop('wrong account identity or environment')
-        if account.currency!=self.config.instrument.account_currency or not account.cash_flow_verified or not account.trade_allowed:
+        if not for_exit and (account.currency!=self.config.instrument.account_currency or not account.cash_flow_verified or not account.trade_allowed):
             raise SafetyStop('account currency, cash flows or trade permission unverified')
-        if digest(self.broker.get_instrument_spec(self.config.instrument.symbol))!=digest(self.config.instrument):
-            raise SafetyStop('instrument contract changed')
+        return account
+
+    def _account(self):
+        account=self._account_identity()
+        actual=self.broker.get_instrument_spec(self.config.instrument.symbol)
+        exclusions={'margin_per_lot','verified'}
+        if {k:v for k,v in actual.model_dump().items() if k not in exclusions}!={k:v for k,v in self.config.instrument.model_dump().items() if k not in exclusions}:
+            raise SafetyStop('static instrument contract changed')
         return account
 
     def _risk_state(self,now: datetime):
@@ -104,7 +112,7 @@ class DemoRunner:
         if state is None:
             state={'day':day,'day_start':account.equity,'high_water':account.equity,
                    'cash_flow':account.cumulative_cash_flow,'daily_halted':False,'permanent_halted':False,
-                   'paused':True,'mode':'reconciling','reason':'owner_activation_required','last_observed':now.isoformat()}
+                   'requires_ack':False,'ack_reason':None,'paused':True,'mode':'reconciling','reason':'owner_activation_required','last_observed':now.isoformat()}
         if now < datetime.fromisoformat(state['last_observed']):
             raise SafetyStop('clock moved backwards')
         state['last_observed']=now.isoformat()
@@ -134,6 +142,8 @@ class DemoRunner:
         order=Order.model_validate_json(row[0])
         if result.filled_lots>order.lots+1e-9 or (result.state in ('filled','partial') and result.filled_lots<=0):
             raise SafetyStop('broker fill volume inconsistent with intent')
+        if result.symbol is not None and result.symbol!=order.symbol:
+            raise SafetyStop('broker result symbol mismatch')
         if result.client_order_id!=identifier:
             raise SafetyStop('broker correlation mismatch')
         with self.store.transaction() as db:
@@ -164,6 +174,8 @@ class DemoRunner:
                         raise SafetyStop('unresolved order intent')
                     self._persist_result(identifier,result)
             for pending in self.broker.get_open_orders():
+                if pending.symbol!=self.config.instrument.symbol:
+                    raise SafetyStop('unexpected pending order symbol')
                 if pending.client_order_id not in intents:
                     raise SafetyStop('unexpected broker order')
                 cancelled=self.broker.cancel_order(pending.client_order_id)
@@ -181,20 +193,20 @@ class DemoRunner:
                 if position.side!=intent.side or position.lots>intent.lots+1e-9:
                     raise SafetyStop('position side/volume mismatch')
                 if position.stop_loss is None:
-                    state.update(paused=True,reason='protection_failure')
+                    state.update(paused=True,reason='protection_failure',requires_ack=True,ack_reason='protection_failure')
                     self.save_state(state)
                     self.broker.close_position(position.position_id)
                     self.store.audit('protection_failure_flatten',{'position_id':position.position_id})
                     raise SafetyStop('missing broker protection; flatten requested')
                 if (position.side==1 and position.stop_loss<intent.stop_loss-1e-9) or (position.side==-1 and position.stop_loss>intent.stop_loss+1e-9):
-                    state.update(paused=True,reason='widened_stop')
+                    state.update(paused=True,reason='widened_stop',requires_ack=True,ack_reason='widened_stop')
                     self.save_state(state)
                     self.broker.close_position(position.position_id)
                     raise SafetyStop('broker stop wider than pinned intent; flatten requested')
                 open_risk+=max(0,position.side*(position.entry_price-position.stop_loss))*position.lots*self.config.instrument.tick_value/self.config.instrument.tick_size
                 open_risk+=2*position.lots*self.config.costs.commission_per_lot_side
             if open_risk>account.equity*self.config.risk.per_trade+1e-7:
-                state.update(paused=True,reason='excess_open_risk')
+                state.update(paused=True,reason='excess_open_risk',requires_ack=True,ack_reason='excess_open_risk')
                 self.save_state(state)
                 self.flatten_known_positions()
                 raise SafetyStop('actual open risk exceeds policy')
@@ -215,6 +227,8 @@ class DemoRunner:
     def start_demo(self,now: datetime):
         self._risk_state(now)
         state=self.state()
+        if state.get('requires_ack'):
+            raise SafetyStop('explicit owner acknowledgement required')
         state['paused']=False
         self.save_state(state)
         return self.reconcile(now)
@@ -253,9 +267,12 @@ class DemoRunner:
             raise SafetyStop('minimum lot or free margin infeasible')
         order=Order(client_order_id=signal.signal_id,symbol=spec.symbol,side=signal.side,lots=lots,
                     reference_price=price,stop_loss=stop,strategy_hash=self.strategy_hash,policy_hash=self.policy_hash)
+        margin=self.broker.calculate_margin(order)
+        if not math.isfinite(margin) or margin<=0 or margin>account.free_margin or account.margin+margin>account.equity*self.config.risk.max_margin_fraction:
+            raise SafetyStop('actual broker margin exceeds policy')
         with self.store.transaction() as db:
             db.execute('INSERT INTO intents VALUES(?,?,?,NULL)',(signal.signal_id,canonical_json(order),'prepared'))
-            self.store.audit('order_prepared',{'client_order_id':signal.signal_id,'lots':lots,'policy_hash':self.policy_hash},db=db)
+            self.store.audit('order_prepared',{'client_order_id':signal.signal_id,'lots':lots,'policy_hash':self.policy_hash,'calculated_margin':margin},db=db)
         try:
             result=self.broker.place_order(order)
             self._persist_result(signal.signal_id,result)
@@ -286,30 +303,86 @@ class DemoRunner:
         except Exception as exc:
             state=self.state()
             if state:
-                state.update(paused=True,mode='reconciling',reason='flatten_uncertainty')
+                state.update(paused=True,mode='reconciling',reason='flatten_uncertainty',requires_ack=True,ack_reason='flatten_uncertainty')
                 self.save_state(state)
             self.store.audit('flatten_failed',{'error_type':type(exc).__name__})
             raise SafetyStop('flatten not confirmed; owner resolution required') from exc
 
     def _flatten_known_positions(self):
-        with self.store.transaction() as db:
+        self._account_identity(for_exit=True)  # Exit permission checks identity, not changing margin/contract assumptions.
+        with self.store.read() as db:
             known={row[0] for row in db.execute('SELECT id FROM intents')}
+        unknown=False
         for pending in self.broker.get_open_orders():
             if pending.client_order_id not in known:
-                raise SafetyStop('unexpected pending order requires owner resolution')
-            self._persist_result(pending.client_order_id,self.broker.cancel_order(pending.client_order_id))
+                unknown=True
+                continue
+            result=self.broker.cancel_order(pending.client_order_id)
+            if result.state!='cancelled':
+                raise SafetyStop('cancel not confirmed')
+            self._persist_result(pending.client_order_id,result)
         for position in self.broker.get_positions():
             if position.client_order_id not in known:
-                raise SafetyStop('unexpected position requires owner resolution')
+                unknown=True
+                continue
             self.broker.close_position(position.position_id)
             self.store.audit('flatten_requested',{'position_id':position.position_id})
-        if self.broker.get_positions() or self.broker.get_open_orders():
-            raise SafetyStop('flatten not confirmed')
+        remaining_positions=self.broker.get_positions()
+        remaining_orders=self.broker.get_open_orders()
+        if any(p.client_order_id in known for p in remaining_positions+remaining_orders):
+            raise SafetyStop('owned flatten not confirmed')
+        if unknown or remaining_positions or remaining_orders:
+            raise SafetyStop('unowned exposure requires owner resolution')
+
+    @serialized
+    def acknowledge_halt(self,reason: str,evidence_hash: str,note: str,now: datetime):
+        state=self.state()
+        if not state or not state.get('requires_ack') or state.get('ack_reason')!=reason:
+            raise SafetyStop('no matching halt to acknowledge')
+        if not re.fullmatch(r'[a-f0-9]{64}',evidence_hash) or not 10<=len(note)<=1000 or now.tzinfo is None:
+            raise ValueError('owner evidence hash, note and aware clock required')
+        self._account_identity()
+        self.store.put('owner_halt_acknowledgement',{'reason':reason,'evidence_hash':evidence_hash,'note':note,'at':now.isoformat()})
+        state.update(requires_ack=False,ack_reason=None,paused=True,reason='owner_acknowledged')
+        self.save_state(state)
+
+    @serialized
+    def resolve_intent(self,identifier: str,evidence_hash: str,note: str,now: datetime):
+        if not re.fullmatch(r'[a-f0-9]{64}',evidence_hash) or not 10<=len(note)<=1000 or now.tzinfo is None:
+            raise ValueError('owner broker-history evidence required')
+        self._account_identity()
+        with self.store.read() as db:
+            row=db.execute('SELECT * FROM intents WHERE id=?',(identifier,)).fetchone()
+        if row is None or row['status'] not in ('prepared','unknown'):
+            raise SafetyStop('intent is not unresolved')
+        if any(p.client_order_id==identifier for p in self.broker.get_positions()+self.broker.get_open_orders()):
+            raise SafetyStop('broker still has matching exposure')
+        actual=self.broker.find_order(identifier)
+        if actual and (actual.filled_lots>0 or actual.state not in ('rejected','cancelled','unknown')):
+            raise SafetyStop('broker evidence does not permit absent/rejected resolution')
+        intent=Order.model_validate_json(row['body'])
+        self.store.put('owner_intent_resolution',{'evidence_hash':evidence_hash,'note':note,'at':now.isoformat()},identity=identifier)
+        self._persist_result(identifier,OrderResult(client_order_id=identifier,symbol=intent.symbol,state='rejected'))
+        state=self.state()
+        state.update(paused=True,mode='paused',reason='owner_resolved_intent')
+        self.save_state(state)
 
     @serialized
     def watchdog(self,now: datetime):
-        state=self.reconcile(now)
+        if now.tzinfo is None:
+            raise SafetyStop('aware watchdog clock required')
         local=now.astimezone(__import__('zoneinfo').ZoneInfo(self.config.session.timezone))
-        if state['mode']=='halted' or local.weekday()>=5 or local.hour>=self.config.session.flatten_hour:
+        cutoff=local.weekday()>=5 or local.hour>=self.config.session.flatten_hour
+        try:
+            state=self.reconcile(now)
+        except SafetyStop:
+            prior=self.state() or {}
+            if cutoff or prior.get('daily_halted') or prior.get('permanent_halted'):
+                # Identity is rechecked inside flatten; a static contract failure must not bypass exits.
+                self.store.audit('safety_exit_after_reconcile_failure',{'cutoff':cutoff})
+                self.flatten_known_positions()
+                self._freeze('reconcile_failed_safety_exit_attempted')
+            raise
+        if state['mode']=='halted' or cutoff:
             self.flatten_known_positions()
         return self.state()

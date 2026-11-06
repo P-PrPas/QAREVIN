@@ -22,14 +22,17 @@ class DemoStrategy:
     def tick(self,closed_m1: pd.DataFrame,now: datetime):
         if now.tzinfo is None:
             raise SafetyStop('aware current time required')
+        try:
+            state=self.runner.watchdog(now)
+        except SafetyStop:
+            state=self.runner.state() or {'mode':'reconciling'}
+            if not self.runner.broker.health_check():
+                return {'status':'reconciling'}
         if closed_m1.empty or closed_m1.index.max()+pd.Timedelta(minutes=1)>pd.Timestamp(now):
             raise SafetyStop('future or incomplete bars')
         if self.identity!=digest({'strategy':self.strategy.model_dump(),'source_hash':source_identity(),
                                   'config_hash':digest(self.runner.config)}):
             raise SafetyStop('pinned runtime changed')
-        state=self.runner.watchdog(now)
-        if state['mode']!='active':
-            return {'status':state['mode']}
         decisions=signals(closed_m1,self.strategy)
         if decisions.empty:
             return {'status':'no_signal'}
@@ -47,6 +50,8 @@ class DemoStrategy:
             self.runner.flatten_known_positions()
         self.runner.store.put('signal_seen',{'available_at':timestamp.isoformat(),'side':direction},identity=identifier)
         age=(pd.Timestamp(now)-timestamp).total_seconds()
+        if state['mode']!='active':
+            return {'status':state['mode'],'signal_id':identifier}
         if direction and 0<=age<60 and not self.runner.broker.get_positions():
             return self.runner.submit(Signal(signal_id=identifier,side=direction,stop_distance=float(decision.stop_distance)),now)
         return {'status':'exit_or_expired','signal_id':identifier}

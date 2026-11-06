@@ -34,3 +34,10 @@ including validation of returned symbols. Cash-flow verification must distinguis
 deposits/withdrawals so restart/daily risk baselines cannot reset drawdown. If history is incomplete,
 return unverified/fail closed. Static margin_per_lot backtest estimates require comparison against
 actual broker margin before adapter acceptance; this is a deployment gate, not evidence from mocks.
+
+Margin is dynamic: POST /v1/margin with the normalized Order returns
+`{required_margin: positive finite account-currency amount}` from the terminal's margin calculator.
+The runner compares static contract terms separately, excluding `margin_per_lot` and local `verified`.
+It validates actual per-order margin against free margin and policy before reserving/sending.
+OrderResult replies, including open orders, lookup and cancellation, must include actual broker
+symbol; unmapped symbols freeze entries rather than silently adopting another instrument.

@@ -44,3 +44,18 @@ inspect actual broker positions independently because revocation does not close 
 Rollback pins a known-good artifact/policy after reconciling existing exposure; never edit an active
 strategy in place or reset the risk DB. An identity mismatch requires owner intervention. No live
 service is enabled; future live rollback follows authenticated deployment authorization separately.
+
+## Exact owner resolution actions
+
+Use only the isolated owner runner process, not Hermes tools:
+`runner.resolve_intent(client_id, broker_history_sha256, owner_note, aware_now)` attests that complete
+broker order/deal history confirms no matching exposure; it refuses a matching position, pending
+order or filled result. It records evidence immutably and leaves execution paused. Do not attest
+absence from one failed lookup. Then inspect risk and call `start_demo` explicitly.
+
+After protection failure, widened stop, excess risk or uncertain flatten, `start_demo` requires
+`runner.acknowledge_halt(reason_code, evidence_sha256, owner_note, aware_now)` first. This records
+what was investigated; it cannot reset permanent drawdown or loss state. Only after the broker
+problem is fixed should the owner call `start_demo`. At cutoff/halt the watchdog still attempts
+owned exits despite reconciliation errors when the demo account identity is confirmed. Wrong
+account/live identity remains an absolute prohibition on any action.

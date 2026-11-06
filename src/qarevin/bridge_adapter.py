@@ -38,6 +38,10 @@ class CloseResult(Contract):
     closed: bool
 
 
+class MarginResult(Contract):
+    required_margin: float = Field(gt=0)
+
+
 class HTTPDemoAdapter:
     def __init__(self,url: str,token: str,*,account_alias: str,server: str,symbol: str,
                  broker_symbol: str | None = None,transport=None):
@@ -91,22 +95,39 @@ class HTTPDemoAdapter:
         return [position.model_copy(update={'symbol':self.symbol}) if position.symbol==self.broker_symbol else position.model_copy(update={'symbol':'UNMAPPED:'+position.symbol}) for position in rows]
 
     def get_open_orders(self):
-        return Orders.model_validate_json(canonical_json(self._request('GET','orders'))).orders
+        rows=Orders.model_validate_json(canonical_json(self._request('GET','orders'))).orders
+        if any(row.symbol is None for row in rows):
+            raise ValueError('bridge pending orders must include symbol')
+        return [row.model_copy(update={'symbol':self.symbol if row.symbol==self.broker_symbol else 'UNMAPPED:'+row.symbol}) for row in rows]
 
     def find_order(self,identifier):
         if not re.fullmatch(r'[a-f0-9]{64}',identifier):
             raise ValueError('invalid client order ID')
-        return Find.model_validate_json(canonical_json(self._request('GET','orders/'+identifier))).order
+        result=Find.model_validate_json(canonical_json(self._request('GET','orders/'+identifier))).order
+        if result and result.symbol!=self.broker_symbol:
+            raise ValueError('bridge lookup symbol mismatch')
+        return result.model_copy(update={'symbol':self.symbol}) if result else None
+
+    def calculate_margin(self,order: Order):
+        self._symbol(order.symbol)
+        outgoing=order.model_copy(update={'symbol':self.broker_symbol})
+        return MarginResult.model_validate_json(canonical_json(self._request('POST','margin',outgoing.model_dump(mode='json')))).required_margin
 
     def place_order(self,order: Order):
         self._symbol(order.symbol)
         outgoing=order.model_copy(update={'symbol':self.broker_symbol})
-        return OrderResult.model_validate_json(canonical_json(self._request('POST','orders',outgoing.model_dump(mode='json'))))
+        result=OrderResult.model_validate_json(canonical_json(self._request('POST','orders',outgoing.model_dump(mode='json'))))
+        if result.symbol!=self.broker_symbol:
+            raise ValueError('bridge order symbol mismatch')
+        return result.model_copy(update={'symbol':self.symbol})
 
     def cancel_order(self,identifier):
         if not re.fullmatch(r'[a-f0-9]{64}',identifier):
             raise ValueError('invalid client order ID')
-        return OrderResult.model_validate_json(canonical_json(self._request('POST','orders/'+identifier+'/cancel')))
+        result=OrderResult.model_validate_json(canonical_json(self._request('POST','orders/'+identifier+'/cancel')))
+        if result.symbol!=self.broker_symbol:
+            raise ValueError('bridge cancellation symbol mismatch')
+        return result.model_copy(update={'symbol':self.symbol})
 
     def close_position(self,identifier):
         if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',identifier):
