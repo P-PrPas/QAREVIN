@@ -120,7 +120,7 @@ def _main(argv: list[str] | None = None) -> None:
         print(json.dumps({"artifact": str(write_artifact(args.output, result))}))
     elif args.command == "backup":
         from qarevin.evidence import EvidenceStore
-        EvidenceStore(args.registry).backup(args.destination)
+        EvidenceStore.open_readonly(args.registry).backup(args.destination)
         print(json.dumps({"backup": str(args.destination)}))
     elif args.command == "import":
         from qarevin.data import import_csv

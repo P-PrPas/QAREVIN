@@ -31,6 +31,54 @@ def test_alert_retries_delivery_is_not_ack_and_condition_recurrence(tmp_path):
     assert store.verify_audit()
 
 
+def test_delivered_normal_alerts_do_not_exhaust_critical_capacity(tmp_path):
+    from qarevin.domain import canonical_json
+    store=EvidenceStore(tmp_path/'ops.sqlite')
+    outbox=AlertOutbox(store)
+    normal=Alert(kind='spread_wide',message='Spread exceeds entry limit')
+    first=outbox.condition('spread',True,normal,NOW)
+    outbox.dispatch_one(lambda *args:'provider-id',NOW)
+    outbox.condition('spread',False,normal,NOW)
+    assert outbox.condition('spread',True,normal,NOW+timedelta(minutes=1))==first
+    with store.transaction() as db:
+        db.executemany('INSERT INTO alerts(id,body,state,next_attempt) VALUES(?,?,?,?)',
+                       [(str(i),canonical_json(normal),'sent',1e30) for i in range(1000)])
+    critical=outbox.enqueue('critical',Alert(kind='execution_halt',message='Execution halted; inspect',critical=True),NOW)
+    assert [row['id'] for row in outbox.pending()]==[critical]
+    assert outbox.dispatch_one(lambda *args:'critical-delivered',NOW)['id']==critical
+
+
+def test_late_delivery_and_repeat_ack_preserve_audit_meaning(tmp_path):
+    store=EvidenceStore(tmp_path/'ops.sqlite')
+    outbox=AlertOutbox(store)
+    identifier=outbox.enqueue('one',Alert(kind='owner_review',message='Owner review requested',critical=True),NOW)
+    def sender(*args):
+        outbox.acknowledge(identifier,'owner')
+        return 'provider-id'
+    assert outbox.dispatch_one(sender,NOW)['acknowledged']
+    before=store.audit_anchor()
+    outbox.acknowledge(identifier,'owner')
+    assert store.audit_anchor()==before
+    with store.read() as db:
+        events=[row[0] for row in db.execute('SELECT event FROM audit_ledger')]
+    assert 'alert_send_late' in events and 'alert_sent' not in events
+
+
+def test_alert_failure_does_not_skip_forward_snapshot(tmp_path,config,monkeypatch):
+    ready=config.model_copy(update={name:getattr(config,name).model_copy(update={'verified':True}) for name in ('instrument','costs','session')})
+    runner,_=create(tmp_path,ready)
+    with runner:
+        runner.start_demo(NOW)
+        outbox=AlertOutbox(runner.store)
+        def fail(*args):
+            raise RuntimeError('queue unavailable')
+        monkeypatch.setattr(outbox,'condition',fail)
+        result=ForwardObserver(runner,outbox).tick(NOW)
+        assert result['snapshot'] and result['alert_errors']
+        assert runner.store.get('forward_snapshot',result['snapshot'])
+        assert any('integrity_failure' in item['body'] for item in outbox.pending())
+
+
 def test_ack_during_delivery_is_not_overwritten(tmp_path):
     outbox=AlertOutbox(EvidenceStore(tmp_path/'ops.sqlite'))
     identifier=outbox.enqueue('one',Alert(kind='owner_review',message='Owner review requested',critical=True),NOW)

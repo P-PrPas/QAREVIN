@@ -12,21 +12,21 @@ import zipfile
 from pathlib import Path, PurePosixPath
 
 from qarevin.domain import canonical_json, file_digest
-from qarevin.evidence import EvidenceStore
+from qarevin.evidence import AuditAnchor, EvidenceStore
 
 
 def _research_only(store: EvidenceStore):
     with store.read() as db:
         forbidden=db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name IN ('execution_state','intents')").fetchone()
-        approvals=db.execute("SELECT 1 FROM objects WHERE kind LIKE 'approval_%' OR kind IN ('deployment_identity','risk_basis_initialized')").fetchone()
+        approvals=db.execute("SELECT 1 FROM objects WHERE kind LIKE 'approval_%' OR kind LIKE 'holdout_%' OR kind IN ('deployment_identity','risk_basis_initialized')").fetchone()
     if forbidden or approvals:
-        raise ValueError('research checkpoint cannot clone execution/approval state')
+        raise ValueError('research checkpoint cannot clone execution/approval/holdout state')
 
 
-def create_checkpoint(registry: Path,artifacts: Path,datasets: Path,destination: Path) -> dict:
-    if not registry.is_file() or registry.is_symlink():
-        raise ValueError('existing regular research registry required')
-    store=EvidenceStore(registry)
+def create_checkpoint(registry: Path,artifacts: Path,datasets: Path,destination: Path,*,max_bytes: int = 10*1024**3) -> dict:
+    if max_bytes<=0:
+        raise ValueError('positive checkpoint size bound required')
+    store=EvidenceStore.open_readonly(registry)
     _research_only(store)
     if not store.verify_audit():
         raise ValueError('audit chain invalid')
@@ -36,6 +36,27 @@ def create_checkpoint(registry: Path,artifacts: Path,datasets: Path,destination:
     if destination.exists() or destination.is_symlink():
         raise ValueError('checkpoint destination must be new')
     destination.parent.mkdir(parents=True,exist_ok=True)
+    paths={}
+    for prefix,root in (('artifacts',artifacts),('datasets',datasets)):
+        if root.is_symlink():
+            raise ValueError('checkpoint source root must not be a symlink')
+        if not root.exists():
+            continue
+        for path in sorted(root.rglob('*')):
+            if path.is_symlink():
+                raise ValueError('checkpoint source contains a symlink')
+            if path.is_file():
+                if any(part in ('.env','secrets','hermes-profile') for part in path.relative_to(root).parts):
+                    raise ValueError('unexpected private material in research source')
+                paths[prefix+'/'+path.relative_to(root).as_posix()]=path
+    wal=Path(str(registry)+'-wal')
+    database_bound=registry.stat().st_size+(wal.stat().st_size if wal.exists() else 0)
+    estimate=sum(path.stat().st_size for path in paths.values())+database_bound+4*1024*1024
+    if estimate>max_bytes:
+        raise ValueError('checkpoint create size limit exceeded')
+    reserve=64*1024*1024
+    if shutil.disk_usage(destination.parent).free<estimate+reserve or shutil.disk_usage(tempfile.gettempdir()).free<database_bound+reserve:
+        raise ValueError('insufficient disk headroom for checkpoint')
     descriptor,name=tempfile.mkstemp(prefix='.checkpoint-',dir=destination.parent)
     os.close(descriptor)
     temp=Path(name)
@@ -43,42 +64,40 @@ def create_checkpoint(registry: Path,artifacts: Path,datasets: Path,destination:
         with tempfile.TemporaryDirectory(prefix='qarevin-db-snapshot-') as snapshot:
             backup=Path(snapshot)/'registry.sqlite'
             store.backup(backup)
-            paths={'registry.sqlite':backup,'registry.sqlite.anchor.json':backup.with_suffix('.sqlite.anchor.json')}
-            for prefix,root in (('artifacts',artifacts),('datasets',datasets)):
-                if root.is_symlink():
-                    raise ValueError('checkpoint source root must not be a symlink')
-                if not root.exists():
-                    continue
-                for path in sorted(root.rglob('*')):
-                    if path.is_symlink():
-                        raise ValueError('checkpoint source contains a symlink')
-                    if path.is_file():
-                        if any(part in ('.env','secrets','hermes-profile') for part in path.relative_to(root).parts):
-                            raise ValueError('unexpected private material in research source')
-                        paths[prefix+'/'+path.relative_to(root).as_posix()]=path
+            snapshot_store=EvidenceStore.open_readonly(backup)
+            _research_only(snapshot_store)
+            anchor=snapshot_store.audit_anchor()
+            paths={'registry.sqlite':backup,'registry.sqlite.anchor.json':backup.with_suffix('.sqlite.anchor.json'),**paths}
             manifest={}
+            written=0
             with zipfile.ZipFile(temp,'w',compression=zipfile.ZIP_DEFLATED,allowZip64=True) as archive:
                 for relative,path in paths.items():
                     sha,size=hashlib.sha256(),0
                     with path.open('rb') as source,archive.open(relative,'w',force_zip64=True) as target:
                         for chunk in iter(lambda:source.read(1024*1024),b''):
+                            written+=len(chunk)
+                            if written>max_bytes:
+                                raise ValueError('checkpoint create size limit exceeded')
                             sha.update(chunk)
                             size+=len(chunk)
                             target.write(chunk)
                     if file_digest(path)!=sha.hexdigest():
                         raise ValueError('source changed during checkpoint')
                     manifest[relative]={'sha256':sha.hexdigest(),'bytes':size}
-                archive.writestr('checkpoint.json',canonical_json({'schema':1,'files':manifest,
-                                  'audit_anchor':EvidenceStore(backup).audit_anchor(),'scope':'research_only'}))
+                encoded=canonical_json({'schema':1,'files':manifest,'audit_anchor':anchor,'scope':'research_only'})
+                if len(encoded.encode())>4*1024*1024 or written+len(encoded.encode())>max_bytes:
+                    raise ValueError('checkpoint manifest/create size limit exceeded')
+                archive.writestr('checkpoint.json',encoded)
         with temp.open('rb') as stream:
             os.fsync(stream.fileno())
         os.link(temp,destination)
-        return {'checkpoint':str(destination),'sha256':file_digest(destination),'scope':'research_only','files':len(manifest)}
+        return {'checkpoint':str(destination),'sha256':file_digest(destination),'scope':'research_only','files':len(manifest),'audit_anchor':anchor}
     finally:
         temp.unlink(missing_ok=True)
 
 
-def restore_checkpoint(source: Path,destination: Path,*,expected_sha256: str,max_bytes: int = 10*1024**3) -> dict:
+def restore_checkpoint(source: Path,destination: Path,*,expected_sha256: str,latest_anchor: dict,max_bytes: int = 10*1024**3) -> dict:
+    known=AuditAnchor.model_validate(latest_anchor)
     if not re.fullmatch(r'[a-f0-9]{64}',expected_sha256) or file_digest(source)!=expected_sha256:
         raise ValueError('checkpoint external digest mismatch')
     if destination.exists() or destination.is_symlink() or max_bytes<=0:
@@ -99,6 +118,9 @@ def restore_checkpoint(source: Path,destination: Path,*,expected_sha256: str,max
             if archive.getinfo('checkpoint.json').file_size>4*1024*1024:
                 raise ValueError('checkpoint manifest too large')
             manifest=json.loads(archive.read('checkpoint.json'))
+            checkpoint_anchor=AuditAnchor.model_validate(manifest['audit_anchor'])
+            if checkpoint_anchor.sequence<known.sequence:
+                raise ValueError('checkpoint older than last known audit anchor')
             if not {'registry.sqlite','registry.sqlite.anchor.json'}<=set(manifest.get('files',{})):
                 raise ValueError('checkpoint missing required registry or anchor')
             if manifest.get('scope')!='research_only' or manifest.get('schema')!=1:
@@ -119,9 +141,9 @@ def restore_checkpoint(source: Path,destination: Path,*,expected_sha256: str,max
                         target.write(chunk)
                 if size!=expected['bytes'] or sha.hexdigest()!=expected['sha256']:
                     raise ValueError('checkpoint member digest mismatch')
-        restored=EvidenceStore(temp/'registry.sqlite')
+        restored=EvidenceStore.open_readonly(temp/'registry.sqlite')
         _research_only(restored)
-        if not restored.verify_audit() or restored.audit_anchor()!=manifest['audit_anchor']:
+        if not restored.verify_audit(known.model_dump()) or restored.audit_anchor()!=manifest['audit_anchor']:
             raise ValueError('checkpoint audit anchor mismatch')
         temp.rename(destination)
         return {'restored':str(destination),'scope':'research_only','audit_anchor':manifest['audit_anchor']}

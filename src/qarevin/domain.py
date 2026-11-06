@@ -144,6 +144,8 @@ class ResearchConfig(Contract):
 
     @model_validator(mode='after')
     def released_data_policy(self):
+        if self.risk.risk_day_timezone != self.session.timezone:
+            raise ValueError('v1 requires matching session and risk-day timezones')
         if datetime.fromisoformat(self.research_access_before)>datetime.fromisoformat(RESEARCH_BOUNDARY.replace('Z','+00:00')) and not self.released_data_record_hash:
             raise ValueError('extending research access requires owner release-record hash')
         return self

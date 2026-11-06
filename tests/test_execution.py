@@ -24,6 +24,14 @@ def signal(number=1):
     return Signal(signal_id=digest({'signal':number}),side=1,stop_distance=1.)
 
 
+@pytest.mark.parametrize('kind',['holdout_access','trial','champion_decision','promotion_request'])
+def test_execution_rejects_every_non_execution_object_kind(tmp_path,ready_config,kind):
+    from qarevin.evidence import EvidenceStore
+    EvidenceStore(tmp_path/'demo.sqlite').put(kind,{'owner_evidence':True})
+    with pytest.raises(SafetyStop,match='separate from research'):
+        create(tmp_path,ready_config)
+
+
 def test_activation_demo_only_and_no_unverified_config(tmp_path,config,ready_config):
     with pytest.raises(ValueError,match='unverified'):
         create(tmp_path,config)

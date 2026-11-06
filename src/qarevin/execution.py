@@ -48,7 +48,9 @@ class DemoRunner:
             raise SafetyStop('single execution writer already running') from None
         try:
             with self.store.transaction() as db:
-                if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='jobs'").fetchone() or db.execute("SELECT 1 FROM objects WHERE kind IN ('dataset','strategy','experiment','experiment_result','hypothesis','candidate','job_result','memory') OR kind LIKE 'walk_forward_%' OR kind LIKE 'robustness_%' OR kind LIKE 'approval_%'").fetchone():
+                allowed=('deployment_identity','risk_basis_initialized','signal_seen','owner_halt_acknowledgement','owner_intent_resolution','forward_snapshot')
+                slots=','.join('?' for _ in allowed)
+                if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='jobs'").fetchone() or db.execute(f"SELECT 1 FROM objects WHERE kind NOT IN ({slots}) LIMIT 1",allowed).fetchone():
                     raise SafetyStop('execution state must be separate from research')
                 db.executescript('''
                     CREATE TABLE IF NOT EXISTS execution_state(id INTEGER PRIMARY KEY CHECK(id=1),body TEXT NOT NULL);

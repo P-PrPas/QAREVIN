@@ -15,6 +15,13 @@ def test_research_has_no_credentials_or_live_toggle(config):
         config.require_demo_ready()
 
 
+def test_session_cannot_cross_a_different_risk_day_timezone(config):
+    payload=config.model_dump()
+    payload['risk']['risk_day_timezone']='America/New_York'
+    with pytest.raises(ValidationError,match='matching session and risk-day'):
+        ResearchConfig.model_validate(payload)
+
+
 def test_policy_is_bounded_finite_and_frozen():
     for value in (0, -1, math.nan, math.inf, 0.01):
         with pytest.raises(ValidationError):

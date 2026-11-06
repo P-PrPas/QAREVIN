@@ -250,13 +250,17 @@ stable event IDs for provider deduplication where supported. No real sender/reci
 ```bash
 .venv/bin/python scripts/research_checkpoint.py create --registry /RESEARCH_STATE/registry.sqlite --artifacts /RESEARCH_STATE/artifacts --datasets /RESEARCH_DATA --output /OWNER_BACKUPS/qarevin.zip
 # Retain the returned SHA256 outside the source machine, then restore into a NEW directory:
-.venv/bin/python scripts/research_checkpoint.py restore /OWNER_BACKUPS/qarevin.zip /NEW_RESEARCH_STATE --expected-sha256 RECORDED_SHA256
+.venv/bin/python scripts/research_checkpoint.py restore /OWNER_BACKUPS/qarevin.zip /NEW_RESEARCH_STATE --expected-sha256 RECORDED_SHA256 --latest-anchor /OWNER_BACKUPS/latest-audit-anchor.json
 ```
 
 Research checkpoints include online SQLite backup/audit anchor, source/result artifacts and raw/
 normalized datasets with per-member byte digests. Restore verifies the externally retained archive
 hash, bounded sizes/member paths/digests and audit anchor before publishing the new directory.
-Symlinks, duplicate/traversal paths, overwritten destinations and execution/approval ledgers are
+Retain the latest known audit anchor outside research state after new trials, not only at backup time;
+restore requires that prefix and rejects older/divergent histories. An archive cannot detect a
+rollback if the owner also supplies an obsolete anchor. Creation uses a read-only source handle,
+a default 10 GiB streamed size cap and disk-headroom checks.
+Symlinks, duplicate/traversal paths, overwritten destinations and execution/approval/sealed-holdout ledgers are
 rejected. Absolute historic artifact paths are informational; replay resolves content hashes in
 the restored artifact root. Tests restore then replay/re-register against the relocated state.
 
@@ -271,3 +275,5 @@ the record must mark reused holdout/forward history as consumed development data
 untouched tail. Config is frozen/read-only to the agent; changing the boundary changes job/config
 identity and does not silently reopen a frozen holdout campaign. Catalog, worker/WF and holdout all
 use that same boundary. The hash is an owner attestation, not an agent approval or proof of provenance.
+
+V1 requires matching session and risk-day timezones so day rollover cannot interrupt the configured session.
