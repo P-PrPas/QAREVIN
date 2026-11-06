@@ -168,3 +168,36 @@ def test_owner_cli_sign_preview_uses_pinned_root_and_private_output(tmp_path,rep
     result=json.loads(preview.stdout)
     assert result['trial_count']==20 and not result['activation_performed']
     assert not result['authorization_consumed']
+
+
+def test_failed_keygen_leaves_state_recoverable(tmp_path):
+    import subprocess
+    import sys
+    from pathlib import Path
+    script=Path(__file__).parents[1]/'scripts/owner_approval.py'
+    readonly=tmp_path/'readonly'
+    readonly.mkdir()
+    readonly.chmod(0o500)
+    state=tmp_path/'owner'
+    try:
+        failed=subprocess.run([sys.executable,str(script),'keygen','--directory',str(readonly/'keys'),'--state',str(state)],capture_output=True)
+        assert failed.returncode==2
+    finally:
+        readonly.chmod(0o700)
+    store=EvidenceStore(state/'approvals.sqlite')
+    assert store.list('approval_trust_root')==[]
+    retry=subprocess.run([sys.executable,str(script),'keygen','--directory',str(tmp_path/'keys'),'--state',str(state)],capture_output=True)
+    assert retry.returncode==0
+
+
+def test_owner_path_rejects_another_local_directory_owner(tmp_path,monkeypatch):
+    import importlib.util
+    from pathlib import Path
+    script=Path(__file__).parents[1]/'scripts/owner_approval.py'
+    spec=importlib.util.spec_from_file_location('owner_cli',script)
+    module=importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    with monkeypatch.context() as patch:
+        patch.setattr(module.os,'geteuid',lambda:999999)
+        with pytest.raises(ValueError,match='directory owner'):
+            module.owner_path(tmp_path/'keys')

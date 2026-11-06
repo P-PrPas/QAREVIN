@@ -26,7 +26,10 @@ def owner_path(path: Path):
     directory=path if path.is_dir() else path.parent
     for parent in (directory,*directory.parents):
         if parent.exists():
-            mode=parent.stat().st_mode
+            metadata=parent.stat()
+            if metadata.st_uid not in (0,os.geteuid()):
+                raise ValueError('owner material has an untrusted directory owner')
+            mode=metadata.st_mode
             if mode & 0o022 and not mode & stat.S_ISVTX:
                 raise ValueError('owner material has an untrusted writable parent directory')
     for name in ('QAREVIN_STATE_DIR','QAREVIN_STATE','QAREVIN_DATA_DIR','QAREVIN_DATASETS','QAREVIN_HERMES_HOME'):
@@ -38,7 +41,7 @@ def owner_path(path: Path):
 
 def public_read(path: Path):
     owner_path(path)
-    if path.is_symlink() or path.stat().st_mode & 0o022 or path.stat().st_size>16384:
+    if path.is_symlink() or path.stat().st_uid not in (0,os.geteuid()) or path.stat().st_mode & 0o022 or path.stat().st_size>16384:
         raise ValueError('public-key file must be bounded, non-symlink and not group/other writable')
     return path.read_bytes()
 
@@ -53,7 +56,7 @@ def owner_state(path: Path):
 
 def private_read(path: Path,limit=16384):
     owner_path(path)
-    if path.is_symlink() or path.stat().st_mode & 0o077 or path.stat().st_size>limit:
+    if path.is_symlink() or path.stat().st_uid not in (0,os.geteuid()) or path.stat().st_mode & 0o077 or path.stat().st_size>limit:
         raise ValueError('private file must be owner-only, bounded and non-symlink')
     return path.read_bytes()
 
@@ -62,10 +65,14 @@ def exclusive_write(path: Path,body: bytes,mode=0o600):
     owner_path(path)
     path.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
     descriptor=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,mode)
-    with os.fdopen(descriptor,'wb') as stream:
-        stream.write(body)
-        stream.flush()
-        os.fsync(stream.fileno())
+    try:
+        with os.fdopen(descriptor,'wb') as stream:
+            stream.write(body)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
 
 
 def main():
@@ -92,13 +99,27 @@ def main():
         directory=owner_path(args.directory)
         if (directory/'owner.private.pem').exists() or (directory/'owner.public.pem').exists():
             raise ValueError('refusing existing approval key paths')
-        key=Ed25519PrivateKey.generate()
         state=owner_state(args.state)
-        state.put('approval_trust_root',{'key_id':public_key_id(key.public_key())},identity='owner')
+        try:
+            state.get('approval_trust_root','owner')
+        except KeyError:
+            pass
+        else:
+            raise ValueError('trust root already initialized; explicit key rotation required')
+        key=Ed25519PrivateKey.generate()
         private=key.private_bytes(serialization.Encoding.PEM,serialization.PrivateFormat.PKCS8,serialization.NoEncryption())
         public=key.public_key().public_bytes(serialization.Encoding.PEM,serialization.PublicFormat.SubjectPublicKeyInfo)
-        exclusive_write(directory/'owner.private.pem',private)
-        exclusive_write(directory/'owner.public.pem',public,0o644)
+        created=[]
+        try:
+            exclusive_write(directory/'owner.private.pem',private)
+            created.append(directory/'owner.private.pem')
+            exclusive_write(directory/'owner.public.pem',public,0o644)
+            created.append(directory/'owner.public.pem')
+            state.put('approval_trust_root',{'key_id':public_key_id(key.public_key())},identity='owner')
+        except BaseException:
+            for path in created:
+                path.unlink(missing_ok=True)
+            raise
         print(canonical_json({'public_key_fingerprint':public_key_id(key.public_key()),'private_key_printed':False}))
         return
     state=owner_state(args.state)
