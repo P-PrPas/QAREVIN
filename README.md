@@ -167,3 +167,26 @@ model/Telegram credentials out of API/worker mounts. The API's owner-access brid
 networking for published-port compatibility; the worker remains without network and neither API nor
 worker receives model/broker secrets. Actual API network policy should be restricted on deployment.
 Permission denials, including sealed-data access, are audit-recorded with per-route coalescing.
+
+## Demo execution safety (F4 engineering)
+
+```bash
+.venv/bin/python scripts/demo_smoke.py --output /tmp/qarevin-demo-smoke
+.venv/bin/pytest tests/test_execution.py -q
+```
+
+`DemoRunner` is owner-process-only, demo-account-only and requires verified instrument/cost/session
+config. It has a process file lock and thread serialization, persistent pre-send intents and cash-flow
+adjusted daily/high-water risk state. Unknown replies never resubmit; restart reconciles first;
+partial-fill remainders are cancelled; missing/widened stops pause and flatten known exposure.
+Stale quotes, clock regression, unexpected positions, contract/account drift and unavailable margin
+fail closed. The watchdog handles cutoff/risk stops. Manual positions remain for owner resolution.
+`DemoStrategy` connects pinned causal seed signals to that path and rejects future bars/code drift.
+
+The smoke command is hardwired to FakeBroker and produces **zero months of forward evidence**.
+HTTPDemoAdapter defines an HTTPS/private bridge contract with explicit symbol suffix mapping, strict
+responses, account/environment-bound headers, no proxy/redirect/retry behavior, and bounded bodies.
+The actual MT5/broker bridge server is not implemented or validated yet: see
+[bridge contract](docs/BRIDGE_CONTRACT.md) and [runbooks](docs/runbooks.md). There is no enabled
+broker runner in Compose and no order tool/API for the agent. F4A broker acceptance and F4B ≥3 real
+calendar months remain external gates. Static margin estimates need broker-specific validation.
