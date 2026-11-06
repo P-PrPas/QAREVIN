@@ -3,6 +3,7 @@ services:
   qarevin-api:
     build: .
     image: qarevin:local
+    restart: unless-stopped
     user: "1000:1000"
     read_only: true
     cap_drop: [ALL]
@@ -21,9 +22,10 @@ services:
       - ${QAREVIN_CONFIG_FILE:-./config/research.example.json}:/config/research.json:ro
     tmpfs: [/tmp:size=64m]
     secrets: [qarevin_agent_token]
-    networks: [control]
+    networks: [control, owner_access]
   qarevin-worker:
     image: qarevin:local
+    restart: unless-stopped
     build: .
     user: "1000:1000"
     read_only: true
@@ -40,19 +42,17 @@ services:
     tmpfs: [/tmp:size=128m]
   qarevin-agent:
     profiles: [agent]
-    image: ${QAREVIN_HERMES_IMAGE:-nousresearch/hermes-agent:SET_A_TESTED_DIGEST}
-    command: gateway run
+    image: ${QAREVIN_HERMES_IMAGE:-nousresearch/hermes-agent@sha256:d4da4a40cd7a28aba983775d9fd31d94cbf153eeb0cb9e844d6d0f612b7c24db}
+    entrypoint: [/opt/hermes/bin/hermes]
+    command: [gateway, run]
+    user: "1000:1000"
     read_only: true
     mem_limit: 768m
     pids_limit: 128
     cap_drop: [ALL]
-    cap_add: [CHOWN, DAC_OVERRIDE, SETUID, SETGID]
     security_opt: [no-new-privileges:true]
-    environment:
-      HERMES_UID: "1000"
-      HERMES_GID: "1000"
     volumes:
-      - ${QAREVIN_HERMES_HOME:-/home/peerapas68/.hermes-qarevin}:/opt/data
+      - ${QAREVIN_HERMES_HOME:-./state/hermes-profile}:/opt/data
       - ./src/qarevin_tools:/opt/qarevin/qarevin_tools:ro
     tmpfs: [/tmp:size=64m, /run:size=32m]
     secrets: [qarevin_agent_token]
@@ -61,6 +61,7 @@ networks:
   control:
     internal: true
   model_egress: {}
+  owner_access: {}
 secrets:
   qarevin_agent_token:
     file: ${QAREVIN_AGENT_TOKEN_PATH:-./secrets/agent_token}

@@ -27,7 +27,7 @@ def configuration(base: dict, api_url: str) -> dict:
     return {'model':model,'agent':{'max_turns':20,'disabled_toolsets':DISABLED},
             'platform_toolsets':{name:['skills','qarevin'] for name in ('cli','telegram','api_server')},
             'gateway':{'allow_all_users':False,'trust_env':False,'strict':True},
-            'memory':{'memory_enabled':True,'user_profile_enabled':True},
+            'memory':{'memory_enabled':False,'user_profile_enabled':False},
             'mcp_servers':{'qarevin':{'command':'/opt/hermes/.venv/bin/python',
                 'args':['-m','qarevin_tools.mcp_server'],
                 'env':{'PYTHONPATH':'/opt/qarevin','QAREVIN_API_URL':api_url,

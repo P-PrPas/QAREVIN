@@ -150,3 +150,38 @@ def test_real_mcp_stdio_handshake_exposes_only_scoped_tools():
                 assert {'research_propose','research_run_backtest','research_get_result','memory_record'}<=names
                 assert not any('approve' in name or 'execution' in name or 'shell' in name for name in names)
     asyncio.run(check())
+
+
+def test_worker_recovers_from_lease_and_finish_errors(service, monkeypatch):
+    import sqlite3
+    original=service.lease
+    monkeypatch.setattr(service,'lease',lambda worker: (_ for _ in ()).throw(sqlite3.OperationalError('locked')))
+    assert run_one(service,check_headroom=False)['status']=='retry_later'
+    monkeypatch.setattr(service,'lease',original)
+    job=service.enqueue(JobRequest(candidate_id=candidate(service),dataset_id=service.dataset_id),'failure-recovery')
+    monkeypatch.setattr(service,'finish',lambda *args,**kwargs: (_ for _ in ()).throw(sqlite3.OperationalError('locked')))
+    assert run_one(service,check_headroom=False)['status']=='retry_later'
+    assert service.job(job['id'])['state']=='running'
+
+
+def test_read_poll_does_not_take_sqlite_write_lock(service):
+    identifier=candidate(service)
+    job=service.enqueue(JobRequest(candidate_id=identifier,dataset_id=service.dataset_id),'reader-check-1')
+    with service.store.transaction():
+        assert service.job(job['id'])['state']=='queued'
+
+
+def test_one_linked_infrastructure_retry_is_bounded_and_audited(service):
+    original=JobRequest(candidate_id=candidate(service),dataset_id=service.dataset_id)
+    first=service.enqueue(original,'first-failed-job')
+    service.lease('failure-driver')
+    service.finish(first['id'],'failure-driver',error_type='TimeoutExpired')
+    retry=original.model_copy(update={'retry_of':first['id']})
+    second=service.enqueue(retry,'one-linked-retry')
+    assert second['id']!=first['id']
+    with pytest.raises(DuplicateExperiment):
+        service.enqueue(retry,'duplicate-retry-key')
+    service.lease('failure-driver')
+    service.finish(second['id'],'failure-driver',error_type='TimeoutExpired')
+    with pytest.raises(ValueError,match='only one'):
+        service.enqueue(original.model_copy(update={'retry_of':second['id']}),'third-attempt-no')

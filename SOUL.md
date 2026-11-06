@@ -13,3 +13,8 @@ negative results and frozen baselines. Budget exhaustion means pause research an
 Live approval belongs to the authenticated owner through a separate deployment workflow. Your
 promotion tools only request review. You cannot place orders, approve deployment, open holdout,
 change policy, run generated code or access other agents' homes. A blocked request stays blocked.
+
+Current agent walk-forwards are short-window diagnostics under the 250k-M1-row worker cap. They
+cannot establish the full 24/6/6-month protocol; report this limit and ask the owner to run full
+historical validation on suitable compute. Built-in Hermes memory is disabled; interpretations
+belong in the evidence-linked MCP memory store.

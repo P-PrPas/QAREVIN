@@ -19,11 +19,13 @@ def run_one(service: ResearchService, *, worker_id: str = 'local-worker', memory
             check_headroom: bool = True) -> dict | None:
     if check_headroom and not preflight(memory_mib, service.config.memory_reserve_mib)['ready']:
         return {'status': 'deferred', 'reason': 'insufficient_memory'}
-    job = service.lease(worker_id)
-    if job is None:
-        return None
-    body = json.loads(job['body'])
+    job = None
+    child_error = None
     try:
+        job = service.lease(worker_id)
+        if job is None:
+            return None
+        body = json.loads(job['body'])
         if body['source_hash'] != source_identity() or body['config_hash'] != digest(service.config):
             raise ValueError('queued code/config no longer matches')
         candidate = service.store.get('candidate', body['candidate_id'])
@@ -54,8 +56,15 @@ def run_one(service: ResearchService, *, worker_id: str = 'local-worker', memory
                             process.wait()
                             service.finish(job['id'], worker_id, error_type='Cancelled')
                             return service.job(job['id'])
-                        time.sleep(.1)
+                        service.renew(job['id'], worker_id)
+                        time.sleep(1)
                     if process.returncode:
+                        failure = scratch / 'failure.json'
+                        if failure.exists() and failure.stat().st_size < 1024:
+                            value = json.loads(failure.read_text()).get('error_type', '')
+                            if value.isalnum() and len(value) < 100:
+                                child_error = 'Child_' + value
+                        service.store.audit('worker_process_failed', {'job_id': job['id'], 'returncode': process.returncode, 'child_error': child_error})
                         raise RuntimeError('bounded worker failed')
                 finally:
                     if process.poll() is None:
@@ -68,8 +77,26 @@ def run_one(service: ResearchService, *, worker_id: str = 'local-worker', memory
             if body['kind'] == 'backtest':
                 # Recalculate the scorecard in this trusted parent; no candidate pass flags accepted.
                 result['scorecard'] = evaluate(result['result'], service.config)
+            if body['kind'] == 'walk_forward':
+                report = result['walk_forward']
+                report['execution_evidence'] = 'diagnostic child-computed; full-history and continuous-risk replay pending'
+                for index, fold in enumerate(report.get('folds', [])):
+                    fold['scorecard'] = evaluate(fold['result'], service.config, evidence_kind='walk_forward')
+                    service.store.put('job_fold_result', {'job_id': job['id'], 'index': index, 'fold': fold['fold'],
+                                      'scorecard': fold['scorecard']}, identity=job['id'] + ':' + str(index))
+                report['promotion_ready'] = False
             result['manifest'] = body
             service.finish(job['id'], worker_id, result=result)
     except Exception as exc:
-        service.finish(job['id'], worker_id, error_type=type(exc).__name__)
-    return service.job(job['id'])
+        if job is None:
+            return {'status': 'retry_later', 'error_type': type(exc).__name__}
+        try:
+            current = service.job(job['id'])
+            if current['state'] == 'running' and current['worker_id'] == worker_id:
+                service.finish(job['id'], worker_id, error_type=child_error or type(exc).__name__)
+        except Exception as recovery:
+            return {'status': 'retry_later', 'job_id': job['id'], 'error_type': type(recovery).__name__}
+    try:
+        return service.job(job['id'])
+    except Exception as exc:
+        return {'status': 'retry_later', 'job_id': job['id'], 'error_type': type(exc).__name__}

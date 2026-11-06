@@ -32,12 +32,12 @@ def research_submit_candidate(hypothesis_id: str, strategy: dict, change_summary
 
 
 @mcp.tool(description='Queue a bounded historical backtest and return job ID immediately. Reuse idempotency key on retry.')
-def research_run_backtest(candidate_id: str, dataset_id: str, idempotency_key: str) -> dict:
-    return client().request('POST','jobs',{'request':{'candidate_id':candidate_id,'dataset_id':dataset_id},
+def research_run_backtest(candidate_id: str, dataset_id: str, idempotency_key: str, retry_of: str | None = None) -> dict:
+    return client().request('POST','jobs',{'request':{'candidate_id':candidate_id,'dataset_id':dataset_id,'retry_of':retry_of},
                                          'idempotency_key':idempotency_key})
 
 
-@mcp.tool(description='Queue fixed-candidate walk-forward with preregistered timezone-aware folds; no holdout dates.')
+@mcp.tool(description='Queue short-window diagnostic walk-forward only under current row cap. Full 24/6/6-month evidence needs owner worker. No holdout dates.')
 def research_run_walk_forward(candidate_id: str, dataset_id: str, folds: list[dict], idempotency_key: str) -> dict:
     return client().request('POST','jobs',{'request':{'candidate_id':candidate_id,'dataset_id':dataset_id,
                                          'kind':'walk_forward','folds':folds},'idempotency_key':idempotency_key})

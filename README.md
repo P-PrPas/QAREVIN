@@ -147,3 +147,16 @@ prompts for owner-installed Hermes jobs after actual-agent budget/injection eval
 offline test uses real bounded workers with synthetic data, not an LLM. `eval/injection_cases.json`
 is the corpus for the still-pending actual Hermes evaluation. API permission tests are not a
 substitute for that gate. No credentials are present in the repository.
+
+F3 review hardening: the worker retries transient controller errors with backoff, polls without a
+SQLite write lock, renews its lease, and services restart unless stopped. One explicitly linked
+infrastructure retry is supported by backtest tools (`retry_of`); failures still consume quota.
+Hypotheses/candidates/memory/promotion creation have daily caps, and denied-request audits coalesce.
+The full 24/6/6-month protocol exceeds the initial 250k row cap: agent WF is diagnostic only.
+Use suitable owner-managed compute for full historical validation.
+
+The cached Hermes digest `d4da4a40...` passed non-root/no-capabilities/no-network CLI and actual MCP
+stdio handshake checks. Compose now bypasses root init and runs UID1000 with zero added caps.
+This validates loading tools, not model behavior/gateway delivery. Export
+`QAREVIN_HERMES_HOME="$HOME/.hermes-qarevin"` when enabling the optional agent profile. Built-in
+Hermes memory is disabled; interpretations use evidence-linked Qarevin memory instead.

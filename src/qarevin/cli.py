@@ -76,7 +76,10 @@ def _main(argv: list[str] | None = None) -> None:
         from qarevin.worker import run_one
         service = ResearchService(EvidenceStore(args.state / "registry.sqlite"), ResearchCatalog(args.datasets), load_config(args.config))
         while True:
-            answer = run_one(service)
+            try:
+                answer = run_one(service)
+            except Exception as exc:
+                answer = {'status': 'retry_later', 'error_type': type(exc).__name__}
             print(json.dumps(answer), flush=True)
             if args.once:
                 break

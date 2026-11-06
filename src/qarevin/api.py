@@ -37,6 +37,7 @@ def create_app(service: ResearchService, token: str) -> FastAPI:
         raise ValueError('agent token must contain at least 32 characters')
     app = FastAPI(title='Qarevin Research Control', docs_url=None, redoc_url=None, openapi_url=None)
     slots = asyncio.Semaphore(2)
+    denied_counts = {}
 
     @app.middleware('http')
     async def boundary(request: Request, call_next):
@@ -66,7 +67,15 @@ def create_app(service: ResearchService, token: str) -> FastAPI:
     @app.exception_handler(ValueError)
     async def invalid(request, exc):
         status = 429 if isinstance(exc, BudgetExceeded) else 409 if isinstance(exc, DuplicateExperiment) else 400
-        service.store.audit('request_denied', {'path': request.url.path, 'error_type': type(exc).__name__})
+        path = getattr(request.scope.get('route'), 'path', request.url.path)
+        key = (path, type(exc).__name__)
+        import time
+        now = time.monotonic()
+        if now - denied_counts.get(key, -60) >= 60:
+            service.store.audit('request_denied', {'path': path, 'error_type': type(exc).__name__})
+            if len(denied_counts) >= 128:
+                denied_counts.clear()
+            denied_counts[key] = now
         return JSONResponse({'error': type(exc).__name__}, status_code=status)
 
     @app.exception_handler(KeyError)
@@ -140,8 +149,8 @@ def create_app(service: ResearchService, token: str) -> FastAPI:
         if job['state'] != 'succeeded':
             raise ValueError('job not succeeded')
         # Request-only: holdout, broker, risk and owner activation remain separate hard gates.
-        identifier = service.store.put('promotion_request', {'job_id': body.job_id, 'target': 'demo',
-                                      'status': 'blocked', 'missing': ['sealed_evidence', 'broker_validation', 'owner_activation']})
+        identifier = service.bounded_put('promotion_request', {'job_id': body.job_id, 'target': 'demo',
+                                      'status': 'blocked', 'missing': ['sealed_evidence', 'broker_validation', 'owner_activation']},10)
         return {'promotion_id': identifier, 'status': 'blocked', 'activated': False}
 
     @app.post('/api/v1/compare')
@@ -159,20 +168,21 @@ def create_app(service: ResearchService, token: str) -> FastAPI:
     @app.post('/api/v1/registry/candidates')
     def register_evidence(body: PromotionRequest):
         evidence = result(body.job_id)
-        identifier = service.store.put('candidate_evidence', {'job_id': body.job_id,
-                       'scorecard': evidence.get('scorecard'), 'deployment_authorized': False})
+        identifier = service.bounded_put('candidate_evidence', {'job_id': body.job_id,
+                       'scorecard': evidence.get('scorecard'), 'deployment_authorized': False},60)
         return {'evidence_id': identifier, 'deployment_authorized': False}
 
     @app.post('/api/v1/promotions/live')
     def request_live(body: PromotionRequest):
         result(body.job_id)
-        identifier = service.store.put('promotion_request', {'job_id': body.job_id, 'target': 'live',
-                       'status': 'blocked', 'missing': ['demo_forward', 'capital_policy', 'owner_authorization']})
+        identifier = service.bounded_put('promotion_request', {'job_id': body.job_id, 'target': 'live',
+                       'status': 'blocked', 'missing': ['demo_forward', 'capital_policy', 'owner_authorization']},10)
         return {'promotion_id': identifier, 'status': 'blocked', 'activated': False}
 
     @app.get('/api/v1/status')
     def status():
         return {'environment': 'research', 'arbitrary_code_enabled': False, 'live_enabled': False,
+                'walk_forward_mode': 'short-window diagnostic only under current row cap',
                 'daily_budget': service.config.daily_experiments, 'job_row_cap': 250000}
 
     return app

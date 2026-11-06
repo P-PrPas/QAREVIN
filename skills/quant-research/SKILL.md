@@ -23,3 +23,6 @@ description: Run bounded XAUUSD experiments, interpret completed evidence, or pr
 
 Demo/live score gaps require checking feed, costs, fills, risk, regime and sample noise before
 attributing overfit. Historical tuning is feedback-guided search, not RL weight training.
+
+The current 250k-row worker supports diagnostic short folds only. Full-history validation uses
+owner-managed compute; never shorten folds and present that as the full preregistered protocol.

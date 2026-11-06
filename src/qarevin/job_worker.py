@@ -32,4 +32,10 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except BaseException as exc:
+        try:
+            (Path(sys.argv[1]) / 'failure.json').write_text(json.dumps({'error_type': type(exc).__name__}))
+        finally:
+            raise SystemExit(1) from None
