@@ -1,0 +1,29 @@
+{
+  "environment": "research",
+  "initial_equity": 1000,
+  "instrument": {
+    "symbol": "XAUUSD_SYNTHETIC",
+    "point": 0.01,
+    "tick_size": 0.01,
+    "tick_value": 1,
+    "contract_size": 100,
+    "volume_min": 0.01,
+    "volume_step": 0.01,
+    "volume_max": 100,
+    "margin_per_lot": 2000,
+    "verified": false
+  },
+  "costs": {
+    "spread_points": 30,
+    "slippage_points": 2,
+    "commission_per_lot_side": 3.5,
+    "verified": false
+  },
+  "session": {
+    "timezone": "UTC",
+    "entry_start_hour": 7,
+    "entry_end_hour": 20,
+    "flatten_hour": 21,
+    "verified": false
+  }
+}
