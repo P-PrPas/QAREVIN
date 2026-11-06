@@ -62,8 +62,29 @@ def _main(argv: list[str] | None = None) -> None:
     backup = sub.add_parser("backup")
     backup.add_argument("registry", type=Path)
     backup.add_argument("destination", type=Path)
+    worker = sub.add_parser("worker")
+    worker.add_argument("--state", type=Path, required=True)
+    worker.add_argument("--datasets", type=Path, required=True)
+    worker.add_argument("--config", type=Path, required=True)
+    worker.add_argument("--once", action="store_true")
     args = parser.parse_args(argv)
-    if args.command in ("evaluate", "compare"):
+    if args.command == "worker":
+        import time
+        from qarevin.catalog import ResearchCatalog
+        from qarevin.evidence import EvidenceStore
+        from qarevin.research import ResearchService
+        from qarevin.worker import run_one
+        service = ResearchService(EvidenceStore(args.state / "registry.sqlite"), ResearchCatalog(args.datasets), load_config(args.config))
+        while True:
+            try:
+                answer = run_one(service)
+            except Exception as exc:
+                answer = {'status': 'retry_later', 'error_type': type(exc).__name__}
+            print(json.dumps(answer), flush=True)
+            if args.once:
+                break
+            time.sleep(5)
+    elif args.command in ("evaluate", "compare"):
         from qarevin.artifacts import read_artifact
         from qarevin.evaluation import compare, evaluate
         config = load_config(args.config)

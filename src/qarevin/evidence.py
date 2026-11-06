@@ -37,6 +37,15 @@ class EvidenceStore:
             ''')
 
     @contextmanager
+    def read(self):
+        db = sqlite3.connect(self.path, timeout=10)
+        db.row_factory = sqlite3.Row
+        try:
+            yield db
+        finally:
+            db.close()
+
+    @contextmanager
     def transaction(self):
         db = sqlite3.connect(self.path, timeout=30)
         db.row_factory = sqlite3.Row

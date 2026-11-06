@@ -1,0 +1,67 @@
+name: qarevin
+services:
+  qarevin-api:
+    build: .
+    image: qarevin:local
+    restart: unless-stopped
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 256m
+    pids_limit: 64
+    ports: ["127.0.0.1:8788:8000"]
+    environment:
+      QAREVIN_STATE: /state
+      QAREVIN_DATASETS: /datasets
+      QAREVIN_CONFIG: /config/research.json
+      QAREVIN_AGENT_TOKEN_FILE: /run/secrets/qarevin_agent_token
+    volumes:
+      - ${QAREVIN_STATE_DIR:-./state}:/state
+      - ${QAREVIN_DATA_DIR:-./data}:/datasets:ro
+      - ${QAREVIN_CONFIG_FILE:-./config/research.example.json}:/config/research.json:ro
+    tmpfs: [/tmp:size=64m]
+    secrets: [qarevin_agent_token]
+    networks: [control, owner_access]
+  qarevin-worker:
+    image: qarevin:local
+    restart: unless-stopped
+    build: .
+    user: "1000:1000"
+    read_only: true
+    network_mode: none
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 1g
+    pids_limit: 64
+    command: [qarevin, worker, --state, /state, --datasets, /datasets, --config, /config/research.json]
+    volumes:
+      - ${QAREVIN_STATE_DIR:-./state}:/state
+      - ${QAREVIN_DATA_DIR:-./data}:/datasets:ro
+      - ${QAREVIN_CONFIG_FILE:-./config/research.example.json}:/config/research.json:ro
+    tmpfs: [/tmp:size=128m]
+  qarevin-agent:
+    profiles: [agent]
+    image: ${QAREVIN_HERMES_IMAGE:-nousresearch/hermes-agent@sha256:d4da4a40cd7a28aba983775d9fd31d94cbf153eeb0cb9e844d6d0f612b7c24db}
+    entrypoint: [/opt/hermes/bin/hermes]
+    command: [gateway, run]
+    user: "1000:1000"
+    read_only: true
+    mem_limit: 768m
+    pids_limit: 128
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - ${QAREVIN_HERMES_HOME:?set QAREVIN_HERMES_HOME outside research state}:/opt/data
+      - ./src/qarevin_tools:/opt/qarevin/qarevin_tools:ro
+    tmpfs: [/tmp:size=64m, /run:size=32m]
+    secrets: [qarevin_agent_token]
+    networks: [control, model_egress]
+networks:
+  control:
+    internal: true
+  model_egress: {}
+  owner_access: {}
+secrets:
+  qarevin_agent_token:
+    file: ${QAREVIN_AGENT_TOKEN_PATH:-./secrets/agent_token}
